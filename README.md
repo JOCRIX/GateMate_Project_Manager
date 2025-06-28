@@ -47,8 +47,6 @@ cc_project_manager/
 │   ├── hierarchy_manager.py          # Project hierarchy management
 │   ├── toolchain_manager.py          # Toolchain detection and management
 │   ├── openfpgaloader_manager.py     # FPGA programming support
-│   ├── vhdl_to_verilog_converter.py  # VHDL to Verilog conversion
-│   ├── setup_openfpgaloader_path.py  # openFPGALoader setup helper
 │   └── requirements.txt              # Python dependencies
 ├── setup.py                          # Package installation script
 ├── MANIFEST.in                       # Package manifest
