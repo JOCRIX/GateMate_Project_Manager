@@ -79,16 +79,10 @@ cc_project_manager/
    ```
    This creates global commands (see Usage section below).
 
-4. **Install FPGA toolchain:**
+4. **Install Cologne Chip FPGA toolchain:**
    - GHDL (for VHDL simulation)
    - Yosys (for synthesis)
    - Cologne Chip GateMate tools (for implementation)
-
-5. **Configure openFPGALoader (optional but recommended):**
-   ```bash
-   python -m cc_project_manager_pkg.setup_openfpgaloader_path
-   ```
-   This helper script will detect and configure openFPGALoader for FPGA programming.
 
 ## Usage
 
