@@ -2,6 +2,8 @@
 
 A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route workflows, specifically designed for Cologne Chip GateMate FPGAs. 
 
+**The project is work-in-progress.**
+
 ## Features
 
 - **🖥️ Modern GUI Interface** - Beautiful PyQt5-based graphical interface with tabbed layout
@@ -26,18 +28,9 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ![image](https://github.com/user-attachments/assets/bf4547df-9f65-486d-b3e5-100dec155580)
 
 - **📊 Uploading to FPGA** - Program the FPGA SRAM or onboard flash memory
+ - Currently support Olimex GateMate boards, make requests to add more boards until I come up with a better way of handling this.
 
 ![image](https://github.com/user-attachments/assets/e0ddd854-169a-4420-8319-9c48c042dc69)
-
-
-## 🆕 GUI Interface Features
-
-- **Tabbed Organization** - Project Management, Synthesis, Implementation, Simulation, and Configuration tabs
-- **Real-time Log Display** - Color-coded log messages with different levels (INFO, WARNING, ERROR)
-- **Threaded Operations** - Long-running operations don't freeze the interface
-- **Dialog-based Configuration** - Easy-to-use dialogs for project creation and settings
-- **Toolbar and Menus** - Standard GUI controls for better user experience
-- **Status Bar** - Shows current operation status
 
 ## Package Structure
 
