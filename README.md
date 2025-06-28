@@ -62,17 +62,19 @@ cc_project_manager/
 1. **Clone the repository:**
    ```bash
    git clone <repository-url>
-   cd cc_project_manager
+   cd GateMate_Project_Manager
    ```
 
 2. **Install Python dependencies:**
    ```bash
+   cd cc_project_manager_pkg
    pip install -r requirements.txt
    ```
    This installs PyQt5 for the GUI interface and other required packages.
 
 3. **Install as a package (optional, for global commands):**
    ```bash
+   cd..
    pip install -e .
    ```
    This creates global commands (see Usage section below).
