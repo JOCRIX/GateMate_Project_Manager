@@ -80,6 +80,7 @@ cc_project_manager/
    This creates global commands (see Usage section below).
 
 4. **Install Cologne Chip FPGA toolchain:**
+   - Tested with the Cologne Chip Legacy Toolchain Packages for Windows (11.06.2025)
    - GHDL (for VHDL simulation)
    - Yosys (for synthesis)
    - Cologne Chip GateMate tools (for implementation)
