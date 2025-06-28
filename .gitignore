@@ -1,0 +1,47 @@
+#!folder_name/.gitkeep - Git will ignore the folder name. ".gitkeep" will cause Git to keep the folder itself as Git doesn't track empty folders
+
+#Project folders
+!synth/.gitkeep
+__TESTS__/
+#!sim/.gitkeep
+!logs/.gitkeep
+!impl/.gitkeep
+!build/.gitkeep
+
+# Python package files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

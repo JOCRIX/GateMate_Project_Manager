@@ -1,0 +1,8 @@
+include README.md
+include requirements.txt
+include LICENSE
+recursive-include cc_project_manager_pkg *.py
+recursive-include cc_project_manager_pkg *.yml
+recursive-include cc_project_manager_pkg *.yaml
+global-exclude __pycache__
+global-exclude *.py[co] 

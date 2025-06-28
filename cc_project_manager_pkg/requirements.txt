@@ -1,0 +1,8 @@
+# Core dependencies for Cologne Chip Project Manager
+pyyaml>=6.0.1
+
+# GUI dependencies
+PyQt5>=5.15.0
+
+# Cross-platform terminal support (Windows only)
+windows-curses>=2.3.1; sys_platform == "win32" 
