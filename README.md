@@ -6,7 +6,6 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 ## Features
 
-- **🖥️ Modern GUI Interface** - Beautiful PyQt5-based graphical interface with tabbed layout
 - **📁 Project Management** - Create and manage FPGA project structures
 ![image](https://github.com/user-attachments/assets/99af9d5b-effe-418a-99c9-ab1523c78d87)
 
