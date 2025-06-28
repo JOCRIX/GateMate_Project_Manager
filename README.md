@@ -253,3 +253,6 @@ The application automatically remembers and reopens the most recently used proje
 - **Automatic Loading** - Reopens last project on startup
 - **Cross-Session** - Remembers projects between application restarts
 - **Settings Storage** - Stored in user home directory (`~/.cc_project_manager/settings.json`) 
+
+## Current Issues
+- The user **must** have all the tools available, including GTKWave, inside the configuration tab or there will be errors during synthesis and implementation.
