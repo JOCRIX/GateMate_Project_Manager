@@ -9,10 +9,26 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ![image](https://github.com/user-attachments/assets/99af9d5b-effe-418a-99c9-ab1523c78d87)
 
 - **⚙️ VHDL Synthesis** - Integration with Yosys for VHDL synthesis with multiple optimization strategies
+
+![image](https://github.com/user-attachments/assets/a0ae843a-f137-4827-b7ca-ab9f64bcf8c2)
+ 
 - **🔍 Simulation** - GHDL-based behavioral simulation with GTKWave integration
+
+![image](https://github.com/user-attachments/assets/a5212d34-19b4-4ca4-8e08-613a908ae48b)
+
+
 - **🛠️ Implementation** - Place & Route with Cologne Chip tools
+
+![image](https://github.com/user-attachments/assets/0c745c4f-4d77-4323-b3bc-b838b603b9cb)
+
 - **🔧 Toolchain Management** - Automatic detection and configuration of FPGA tools
-- **📊 Real-time Logging** - Live output window showing operation progress
+
+![image](https://github.com/user-attachments/assets/bf4547df-9f65-486d-b3e5-100dec155580)
+
+- **📊 Uploading to FPGA** - Program the FPGA SRAM or onboard flash memory
+
+![image](https://github.com/user-attachments/assets/e0ddd854-169a-4420-8319-9c48c042dc69)
+
 
 ## 🆕 GUI Interface Features
 
