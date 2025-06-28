@@ -1,6 +1,6 @@
 # Cologne Chip Project Manager
 
-A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route workflows, specifically designed for Cologne Chip GateMate FPGAs. Features a **modern GUI interface** for intuitive FPGA development!
+A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route workflows, specifically designed for Cologne Chip GateMate FPGAs. 
 
 ## Features
 
