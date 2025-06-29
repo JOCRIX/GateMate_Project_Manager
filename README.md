@@ -207,45 +207,5 @@ JOCRIX
 
 0.1.0
 
-## Synthesis Strategies
-
-The tool supports multiple synthesis optimization strategies:
-
-- **area** - Minimize resource usage (LUTs, logic gates)
-- **speed** - Maximize performance/frequency
-- **balanced** - Balance area and speed (default)
-- **quality** - Thorough optimization for better results
-- **timing** - Advanced timing-driven optimization
-- **extreme** - Maximum optimization for performance-critical designs
-
-## Simulation Features
-
-- **Behavioral Simulation** - Simulate original VHDL code
-- **Post-Synthesis Simulation** - Simulate synthesized netlist
-- **Post-Implementation Simulation** - Simulate placed & routed design
-- **GTKWave Integration** - Automatic waveform viewer launch
-- **Simulation Profiles** - Save and reuse simulation settings
-
-## Implementation Features
-
-- **Place & Route** - Automatic placement and routing with intelligent constraint file auto-detection
-- **Bitstream Generation** - Generate programming files
-- **Timing Analysis** - Check timing constraints
-- **Multiple Strategies** - Speed, area, balanced, power optimization
-- **FPGA Programming** - Direct upload to FPGA via openFPGALoader integration
-
-## Configuration
-
-The tool automatically detects installed FPGA tools and can be configured to use:
-- **PATH** - Tools available in system PATH
-- **DIRECT** - Direct paths to tool binaries
-
-## Recent Project Memory
-
-The application automatically remembers and reopens the most recently used project:
-- **Automatic Loading** - Reopens last project on startup
-- **Cross-Session** - Remembers projects between application restarts
-- **Settings Storage** - Stored in user home directory (`~/.cc_project_manager/settings.json`) 
-
 ## Current Issues
 - The user **must** have all the tools available, including GTKWave, inside the configuration tab or there will be errors during synthesis and implementation.
