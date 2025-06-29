@@ -76,7 +76,12 @@ class GHDLCommands(ToolChainManager):
             self.work_dir = self.config["project_structure"]["build"][0]
         else:
             self.work_dir = self.config["project_structure"]["build"]
-        self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+        # Get individual ghdl preference, fallback to global preference for backward compatibility
+        tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+        if "ghdl" in tool_prefs:
+            self.tool_access_mode = tool_prefs["ghdl"]
+        else:
+            self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
         self.ghdl_access = self._get_ghdl_access()
         #ToolChainManager instantiation report
         self._report_instantiation()

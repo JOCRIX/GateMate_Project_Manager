@@ -25,99 +25,254 @@ class ToolChainManager(HierarchyManager):
 
     def check_toolchain(self) -> bool:
         """
-            Check if the tools are available through PATH or direct binary paths.
+            Check if the tools are available and set individual tool preferences.
+            Each tool can be configured independently to use PATH or DIRECT access.
 
         Returns:
-            bool: True if at least one method works, False otherwise.
+            bool: True if at least one tool is available, False if all tools fail.
         """
         STATUS_OK = "OK"
         STATUS_FAIL = "FAIL"
-        tool_status = {}
-
-        # Check via PATH
-        if self.check_toolchain_path():
-            tool_status["PATH"] = STATUS_OK
-        else:
-            logging.warning("Some or all GateMate tools are unavailable through Windows PATH.")
-            tool_status["PATH"] = STATUS_FAIL
-
-        # Check via direct paths
-        if self.check_toolchain_direct(override_exit=True):
-            tool_status["BINARY"] = STATUS_OK
-        else:
-            logging.warning("Some or all GateMate tools are unavailable through the specified binary paths.")
-            tool_status["BINARY"] = STATUS_FAIL
-
-        # Analyze status and log accordingly
-        path_status = tool_status.get("PATH")
-        binary_status = tool_status.get("BINARY")
         
-        if path_status == STATUS_FAIL and binary_status == STATUS_FAIL:
-            logging.error("GateMate tool chain is not reachable through PATH or directly specified paths. Re-configure toolchain manager and check tool chain installation.")
-            print("GateMate tool chain is not reachable through PATH or directly specified paths. Re-configure toolchain manager and check tool chain installation.")
-            self.set_toolchain_preference("undefined")
+        # Initialize individual tool preferences if they don't exist
+        self.initialize_individual_tool_preferences()
+        
+        tool_results = {}
+        
+        # Check each tool individually
+        for tool_name in self.__tool_chain:
+            tool_results[tool_name] = {
+                "PATH": STATUS_FAIL,
+                "DIRECT": STATUS_FAIL,
+                "available": False
+            }
+            
+            # Check via PATH
+            if self.check_tool_version_path(tool_name):
+                tool_results[tool_name]["PATH"] = STATUS_OK
+                logging.info(f"{tool_name} is available through PATH")
+            else:
+                logging.warning(f"{tool_name} is not available through PATH")
+            
+            # Check via direct paths
+            if self.check_tool_version_direct(tool_name):
+                tool_results[tool_name]["DIRECT"] = STATUS_OK
+                logging.info(f"{tool_name} is available through direct path")
+            else:
+                logging.warning(f"{tool_name} is not available through direct path")
+            
+            # Set individual tool preference based on availability
+            path_available = tool_results[tool_name]["PATH"] == STATUS_OK
+            direct_available = tool_results[tool_name]["DIRECT"] == STATUS_OK
+            
+            if path_available and direct_available:
+                # Both available - keep current preference or default to PATH
+                current_pref = self.get_tool_preference(tool_name)
+                if current_pref not in ["PATH", "DIRECT"]:
+                    self.set_tool_preference(tool_name, "PATH")
+                    logging.info(f"{tool_name}: Both PATH and DIRECT available, set to PATH")
+                else:
+                    logging.info(f"{tool_name}: Both PATH and DIRECT available, keeping current preference: {current_pref}")
+                tool_results[tool_name]["available"] = True
+            elif path_available:
+                self.set_tool_preference(tool_name, "PATH")
+                logging.info(f"{tool_name}: Only PATH available, set to PATH")
+                tool_results[tool_name]["available"] = True
+            elif direct_available:
+                self.set_tool_preference(tool_name, "DIRECT")
+                logging.info(f"{tool_name}: Only DIRECT available, set to DIRECT")
+                tool_results[tool_name]["available"] = True
+            else:
+                self.set_tool_preference(tool_name, "UNDEFINED")
+                logging.error(f"{tool_name}: Neither PATH nor DIRECT available, set to UNDEFINED")
+                tool_results[tool_name]["available"] = False
+
+        # Check how many tools are available
+        available_tools = sum(1 for tool in tool_results.values() if tool["available"])
+        total_tools = len(self.__tool_chain)
+        
+        logging.info(f"Toolchain check complete: {available_tools}/{total_tools} tools available")
+        
+        if available_tools == 0:
+            logging.error("No GateMate tools are available. Check tool installations and configuration.")
+            print("No GateMate tools are available. Check tool installations and configuration.")
             return False
-
-        if path_status == STATUS_OK and binary_status == STATUS_OK:
-            logging.info("GateMate tool chain is available through both PATH and the directly specified binary paths.")
-            print("GateMate tool chain is available through both PATH and the directly specified binary paths.")
-            self.set_toolchain_preference("path")
+        elif available_tools < total_tools:
+            logging.warning(f"Some GateMate tools are not available ({available_tools}/{total_tools}). Available tools can still be used.")
+            print(f"Some GateMate tools are not available ({available_tools}/{total_tools}). Available tools can still be used.")
         else:
-            if path_status == STATUS_OK:
-                logging.info("GateMate tool chain is available through PATH, but not through file system path")
-                print(f"GateMate tool chain is available through PATH, but not through file system path")
-                self.set_toolchain_preference("path")
-            if binary_status == STATUS_OK:
-                logging.info("GateMate tool chain is available with direct file system path, but not the PATH environment variable.")
-                print(f"GateMate tool chain is available with direct file system path, but not the PATH environment variable.")
-                self.set_toolchain_preference("direct")
+            logging.info("All GateMate tools are available and configured.")
+            print("All GateMate tools are available and configured.")
 
-        #Check Yosys + GHDL plugin
-        if self.check_ghdl_yosys_link():
-            logging.info("The Yosys + GHDL plugin in the Cologne Chip' pre-compiled toolchain is OK")
+        # Check Yosys + GHDL plugin if both tools are available
+        if (tool_results.get("yosys", {}).get("available", False) and 
+            tool_results.get("ghdl", {}).get("available", False)):
+            if self.check_ghdl_yosys_link():
+                logging.info("The Yosys + GHDL plugin is working correctly")
+            else:
+                logging.warning("The Yosys + GHDL plugin may not be working correctly.")
         else:
-            logging.warning("The Yosys + GHDL plugin in the Cologne Chip' pre-compiled toolchain may not be working correctly.")
-
-        #Add availability to project configuration.
-     
+            logging.info("Skipping GHDL-Yosys plugin check (one or both tools not available)")
 
         return True
 
-    def set_toolchain_preference(self, preference : str = "PATH") -> bool:
+    def initialize_individual_tool_preferences(self):
+        """Initialize individual tool preferences if they don't exist."""
+        if "cologne_chip_gatemate_tool_preferences" not in self.config:
+            self.config["cologne_chip_gatemate_tool_preferences"] = {}
+        
+        # Ensure all tools have a preference entry
+        for tool_name in self.__tool_chain:
+            if tool_name not in self.config["cologne_chip_gatemate_tool_preferences"]:
+                self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = "PATH"
+        
+        # Also initialize GTKWave preference
+        if "gtkwave" not in self.config["cologne_chip_gatemate_tool_preferences"]:
+            self.config["cologne_chip_gatemate_tool_preferences"]["gtkwave"] = "PATH"
+        
+        # Save configuration
+        self.update_config()
+
+    def get_tool_preference(self, tool_name: str) -> str:
         """
-        Set the toolchain access preference in the project configuration.
-
-        This method updates the project configuration file to specify how the toolchain 
-        should be accessed—either through the system's PATH environment variable 
-        ("PATH") or by using explicitly defined file system paths to the binaries ("DIRECT").
-
-        Parameters:
-            preference (str): Toolchain access preference. Must be one of:
-                            "PATH" (use environment variable),
-                            "DIRECT" (use explicit paths),
-                            "UNDEFINED" (unspecified).
-                            Defaults to "PATH".
-
+        Get the access preference for a specific tool.
+        
+        Args:
+            tool_name (str): Name of the tool (ghdl, yosys, p_r, openfpgaloader, gtkwave)
+            
         Returns:
-            bool: True if the configuration was updated successfully, False otherwise.
+            str: Tool preference ("PATH", "DIRECT", or "UNDEFINED")
         """
-        new_preference = preference.upper()
+        # Special handling for GTKWave (uses different config system)
+        if tool_name == "gtkwave":
+            tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+            return tool_prefs.get(tool_name, "PATH")
+        
+        if tool_name not in self.__tool_chain:
+            logging.error(f"Unknown tool: {tool_name}")
+            return "UNDEFINED"
+        
+        tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+        return tool_prefs.get(tool_name, "PATH")
+
+    def set_tool_preference(self, tool_name: str, preference: str) -> bool:
+        """
+        Set the access preference for a specific tool.
+        
+        Args:
+            tool_name (str): Name of the tool (ghdl, yosys, p_r, openfpgaloader, gtkwave)
+            preference (str): Tool preference ("PATH", "DIRECT", or "UNDEFINED")
+            
+        Returns:
+            bool: True if successfully set, False otherwise
+        """
         supported_preferences = ("PATH", "DIRECT", "UNDEFINED")
-        if new_preference not in supported_preferences:
-            logging.error(f"New toolchain preference {preference} is not in supported_preferences {supported_preferences}. Return.")
+        if preference.upper() not in supported_preferences:
+            logging.error(f"Invalid preference {preference} for {tool_name}. Must be one of: {supported_preferences}")
             return False
-        #add preference to project configuration file.
-        self.config["cologne_chip_gatemate_toolchain_preference"] = new_preference
-        #write to configuration file
+        
+        # Special handling for GTKWave (uses different config system)
+        if tool_name == "gtkwave":
+            # Ensure the preferences structure exists
+            if "cologne_chip_gatemate_tool_preferences" not in self.config:
+                self.config["cologne_chip_gatemate_tool_preferences"] = {}
+            
+            # Set the preference
+            self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = preference.upper()
+            logging.info(f"Set {tool_name} preference to {preference.upper()}")
+            
+            # Save configuration
+            return self.update_config()
+        
+        if tool_name not in self.__tool_chain:
+            logging.error(f"Unknown tool: {tool_name}")
+            return False
+        
+        # Ensure the preferences structure exists
+        if "cologne_chip_gatemate_tool_preferences" not in self.config:
+            self.config["cologne_chip_gatemate_tool_preferences"] = {}
+        
+        # Set the preference
+        self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = preference.upper()
+        logging.info(f"Set {tool_name} preference to {preference.upper()}")
+        
+        # Save configuration
+        return self.update_config()
+
+    def check_tool_version_path(self, tool_name: str) -> bool:
+        """Check if a specific tool is available through PATH."""
+        if tool_name not in self.__tool_chain:
+            return False
+        
         try:
-            logging.info(f"Updating project configuration with new tool chain access preference: {new_preference}")
-            with open(self.config_path, "w") as config_file:
-                yaml.safe_dump(self.config, config_file)
-                return True
-        except Exception as e:
-            logging.error(f"Failed to update project configuration file: {e}")
+            # Use the actual binary name from the tool chain dictionary
+            tool_command = self.__tool_chain[tool_name]
+            
+            # Use appropriate version flag
+            version_flag = "--version"
+            if tool_name == "openfpgaloader":
+                version_flag = "--Version"
+            
+            result = subprocess.run([tool_command, version_flag], capture_output=True, text=True, check=True)
+            logging.debug(f"{tool_name} PATH check successful: {result.stdout[:100]}")
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            logging.debug(f"{tool_name} PATH check failed: {e}")
             return False
 
+    def check_tool_version_direct(self, tool_name: str) -> bool:
+        """Check if a specific tool is available through direct path."""
+        if tool_name not in self.__tool_chain:
+            return False
+        
+        tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+        tool_path = tool_paths.get(tool_name, "")
+        
+        if not tool_path or not os.path.exists(tool_path):
+            return False
+        
+        try:
+            # Use appropriate version flag
+            version_flag = "--version"
+            if tool_name == "openfpgaloader":
+                version_flag = "--Version"
+            
+            result = subprocess.run([tool_path, version_flag], capture_output=True, text=True, check=True)
+            logging.debug(f"{tool_name} DIRECT check successful: {result.stdout[:100]}")
+            return True
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            logging.debug(f"{tool_name} DIRECT check failed: {e}")
+            return False
+
+    def get_tool_command(self, tool_name: str) -> str:
+        """
+        Get the command to execute a specific tool based on its preference.
+        
+        Args:
+            tool_name (str): Name of the tool
+            
+        Returns:
+            str: Command to execute the tool, or empty string if not available
+        """
+        if tool_name not in self.__tool_chain:
+            logging.error(f"Unknown tool: {tool_name}")
+            return ""
+        
+        preference = self.get_tool_preference(tool_name)
+        
+        if preference == "DIRECT":
+            tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+            tool_path = tool_paths.get(tool_name, "")
+            if tool_path and os.path.exists(tool_path):
+                return tool_path
+            else:
+                logging.warning(f"{tool_name} preference is DIRECT but path not found, falling back to PATH")
+                return self.__tool_chain[tool_name]
+        elif preference == "PATH":
+            return self.__tool_chain[tool_name]
+        else:
+            logging.warning(f"{tool_name} preference is {preference}, tool may not be available")
+            return ""
 
     def check_toolchain_path(self) -> bool:
         """check if the colognechip gatemate toolchain is available through the PATH environment variable"""
@@ -181,6 +336,44 @@ class ToolChainManager(HierarchyManager):
         logging.info("GateMate direct tool path check complete. All tools are available and OK.")
         return True
     
+    def update_config(self) -> bool:
+        """Update the configuration file with current config data."""
+        try:
+            if not self.config_path:
+                logging.warning("No configuration file path available. Configuration not saved.")
+                return False
+            with open(self.config_path, "w") as config_file:
+                yaml.safe_dump(self.config, config_file)
+            return True
+        except Exception as e:
+            logging.error(f"Failed to update configuration file: {e}")
+            return False
+
+    def set_toolchain_preference(self, preference: str = "PATH") -> bool:
+        """
+        Legacy method for backward compatibility. Sets all tools to the same preference.
+        
+        Args:
+            preference (str): Toolchain access preference ("PATH", "DIRECT", "UNDEFINED")
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        new_preference = preference.upper()
+        supported_preferences = ("PATH", "DIRECT", "UNDEFINED")
+        if new_preference not in supported_preferences:
+            logging.error(f"Invalid preference {preference}. Must be one of: {supported_preferences}")
+            return False
+        
+        # Set all tools to the same preference
+        success = True
+        for tool_name in self.__tool_chain:
+            if not self.set_tool_preference(tool_name, new_preference):
+                success = False
+        
+        logging.info(f"Set all tools to preference: {new_preference}")
+        return success
+
     def check_ghdl_yosys_link(self) -> bool:
         """
         Check whether the GHDL plugin is available in the configured Yosys binary.
@@ -194,22 +387,12 @@ class ToolChainManager(HierarchyManager):
         """
         logging.info("Verifying Yosys' GHDL plugin installation.")
 
-        yosys_access = ""
-        #Check if Yosys should be accessed through PATH
-        if self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH") == "DIRECT":
-            #get cologne chip pre-compiled yosys tool path
-            if "cologne_chip_gatemate_toolchain_paths" not in self.config:
-                logging.error(f"The toolchain structure does not exist. Run set_config_path_structure() first.")
-                return
-            #Check yosys path
-            yosys_access = self.config["cologne_chip_gatemate_toolchain_paths"].get("yosys", "")
-            if yosys_access != "":
-                logging.info(f"Yosys path is set to: {yosys_access}")
-            else:
-                logging.error("Yosys path is not set or is empty.")
-                return False
-        else: #use PATH for Yosys instead.
-            yosys_access = "yosys"
+        # Use the new get_tool_command method to get the correct yosys command
+        yosys_access = self.get_tool_command("yosys")
+        
+        if not yosys_access:
+            logging.error("Yosys is not available - cannot check GHDL plugin")
+            return False
 
         #Query Yosys for GHDL
         try:
@@ -305,32 +488,24 @@ class ToolChainManager(HierarchyManager):
         except Exception as e:
             logging.error(f"Failed to append tool_path_structure to the configuration file: {e}")
 
-    def check_tool_version(self, tool_name : str = None) -> bool:
-        """Checks if tool is available and logs the version.
+    def check_tool_version(self, tool_name: str = None) -> bool:
+        """Checks if tool is available and logs the version using individual tool preference.
         
         Args:
-            (str) the name of the tool. "ghdl", "yosys", "p_r", "openfpgaloader"
+            tool_name (str): The name of the tool. "ghdl", "yosys", "p_r", "openfpgaloader"
         Returns:
-            (bool)  Returns '1' if OK, '0' otherwise.       
+            bool: Returns True if OK, False otherwise.       
         """
         if tool_name not in self.__tool_chain:
-            #print(f"Unsupported tool in tool check: {tool_name}, valid tools are {self.__tool_chain}")
             logging.error(f"Unsupported tool in tool check: {tool_name}, valid tools are {self.__tool_chain}")
             return False
         
-        # Determine which command to use based on toolchain preference
-        preference = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+        # Get the appropriate command based on individual tool preference
+        tool_command = self.get_tool_command(tool_name)
         
-        if preference == "DIRECT":
-            # Use direct path if available
-            tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-            tool_command = tool_paths.get(tool_name, "")
-            if not tool_command or not os.path.exists(tool_command):
-                logging.error(f"Direct path for {tool_name} not found or invalid: {tool_command}")
-                return False
-        else:
-            # Use PATH - get the actual binary name from the tool chain dictionary
-            tool_command = self.__tool_chain[tool_name]
+        if not tool_command:
+            logging.error(f"Tool command not available for {tool_name}")
+            return False
         
         # Use appropriate version flag for each tool
         version_flag = "--version"
@@ -339,24 +514,22 @@ class ToolChainManager(HierarchyManager):
         
         try:
             result = subprocess.run([tool_command, version_flag], capture_output=True, text=True, check=True)    
-            #print(f"{tool_name} version :\n{result.stdout}")
-            logging.info(f"{tool_name} version :\n{result.stdout}")
+            logging.info(f"{tool_name} version check successful:\n{result.stdout}")
+            return True
         except FileNotFoundError:
-            #print(f"Error: '{tool_name}' not found in PATH.")
+            preference = self.get_tool_preference(tool_name)
             if preference == "DIRECT":
                 logging.error(f"Error: '{tool_name}' not found at direct path: {tool_command}")
             else:
                 logging.error(f"Error: '{tool_command}' not found in PATH.")
             return False
         except subprocess.CalledProcessError as e:
-            #print(f"Error: '{tool_name}' not found in PATH.")
+            preference = self.get_tool_preference(tool_name)
             if preference == "DIRECT":
                 logging.error(f"Error: '{tool_name}' failed at direct path: {tool_command}")
             else:
-                logging.error(f"Error: '{tool_command}' not found in PATH.")
+                logging.error(f"Error: '{tool_command}' failed in PATH.")
             return False
-        if result:
-            return True
 
 
 if __name__ == "__main__":

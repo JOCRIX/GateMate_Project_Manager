@@ -3043,6 +3043,9 @@ class MainWindow(QMainWindow):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         
+        # Initialize the dropdown dictionary
+        self.tool_preference_dropdowns = {}
+        
         # Toolchain group
         toolchain_group = QGroupBox("Toolchain Configuration")
         toolchain_group.setMaximumWidth(400)  # Limit container width
@@ -3081,19 +3084,7 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("Toolchain Status")
         status_layout = QVBoxLayout(status_group)
         
-        # Overall status section
-        overall_frame = QFrame()
-        overall_frame.setFrameStyle(QFrame.StyledPanel)
-        overall_layout = QVBoxLayout(overall_frame)
-        
-        self.overall_status_label = QLabel("Overall Status: Checking...")
-        self.overall_status_label.setFont(QFont("Arial", 10, QFont.Bold))
-        overall_layout.addWidget(self.overall_status_label)
-        
-        self.preference_label = QLabel("Preference: Unknown")
-        overall_layout.addWidget(self.preference_label)
-        
-        status_layout.addWidget(overall_frame)
+
         
         # Individual tools section
         tools_frame = QFrame()
@@ -3104,7 +3095,7 @@ class MainWindow(QMainWindow):
         tools_title.setFont(QFont("Arial", 10, QFont.Bold))
         tools_layout.addWidget(tools_title)
         
-        # Create status labels for each tool
+        # Create status labels and preference dropdowns for each tool
         self.tool_status_labels = {}
         tools = ["GHDL", "Yosys", "P&R", "openFPGALoader", "GTKWave"]
         
@@ -3113,9 +3104,54 @@ class MainWindow(QMainWindow):
             tool_frame.setFrameStyle(QFrame.Box)
             tool_layout = QVBoxLayout(tool_frame)
             
+            # Tool title and preference in header
+            tool_header_layout = QHBoxLayout()
             tool_title = QLabel(f"{tool}:")
             tool_title.setFont(QFont("Arial", 9, QFont.Bold))
-            tool_layout.addWidget(tool_title)
+            tool_header_layout.addWidget(tool_title)
+            
+            # Add preference dropdown for all tools
+            if True:  # Include all tools now
+                tool_header_layout.addStretch()
+                
+                pref_label = QLabel("Preference:")
+                pref_label.setFont(QFont("Arial", 8))
+                tool_header_layout.addWidget(pref_label)
+                
+                pref_dropdown = QComboBox()
+                pref_dropdown.addItems(["PATH", "DIRECT"])
+                pref_dropdown.setMaximumWidth(80)
+                pref_dropdown.setFont(QFont("Arial", 8))
+                # Dark theme styling for dropdown
+                pref_dropdown.setStyleSheet("""
+                    QComboBox {
+                        border: 1px solid #555;
+                        border-radius: 3px;
+                        padding: 1px 4px 1px 3px;
+                        background-color: #3a3a3a;
+                        color: #ffffff;
+                        selection-background-color: #4a4a4a;
+                    }
+                    QComboBox::drop-down {
+                        width: 15px;
+                        border: none;
+                    }
+                    QComboBox::down-arrow {
+                        width: 10px;
+                        height: 10px;
+                    }
+                    QComboBox:hover {
+                        background-color: #4a4a4a;
+                    }
+                """)
+                pref_dropdown.currentTextChanged.connect(
+                    lambda value, t=tool: self.on_tool_preference_changed(t, value)
+                )
+                tool_header_layout.addWidget(pref_dropdown)
+                
+                self.tool_preference_dropdowns[tool] = pref_dropdown
+            
+            tool_layout.addLayout(tool_header_layout)
             
             path_label = QLabel("PATH: Checking...")
             direct_label = QLabel("DIRECT: Checking...")
@@ -3149,11 +3185,7 @@ class MainWindow(QMainWindow):
         
         status_layout.addWidget(advanced_frame)
         
-        # Refresh button
-        refresh_btn = QPushButton("🔄 Check Status")
-        refresh_btn.clicked.connect(self.refresh_toolchain_status)
-        refresh_btn.setMaximumWidth(150)
-        status_layout.addWidget(refresh_btn)
+
         
         status_layout.addStretch()
         
@@ -3164,10 +3196,34 @@ class MainWindow(QMainWindow):
         
         return status_group
     
+    def on_tool_preference_changed(self, tool_name, preference):
+        """Handle tool preference dropdown changes."""
+        try:
+            from cc_project_manager_pkg.toolchain_manager import ToolChainManager
+            tcm = ToolChainManager()
+            
+            # Map display names to internal tool names
+            tool_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader", "GTKWave": "gtkwave"}
+            internal_tool_name = tool_map.get(tool_name)
+            
+            if internal_tool_name:
+                success = tcm.set_tool_preference(internal_tool_name, preference)
+                if success:
+                    logging.info(f"Changed {tool_name} preference to {preference}")
+                    # Refresh status to show updated configuration
+                    self.refresh_toolchain_status()
+                else:
+                    logging.error(f"Failed to change {tool_name} preference to {preference}")
+            else:
+                logging.error(f"Unknown tool: {tool_name}")
+                
+        except Exception as e:
+            logging.error(f"Error changing tool preference: {e}")
+    
     def refresh_toolchain_status(self):
         """Refresh the toolchain status display."""
         # Check if status widgets exist (Configuration tab might not be created yet)
-        if not hasattr(self, 'overall_status_label'):
+        if not hasattr(self, 'tool_status_labels'):
             return
             
         def update_status():
@@ -3175,19 +3231,89 @@ class MainWindow(QMainWindow):
                 from cc_project_manager_pkg.toolchain_manager import ToolChainManager
                 tcm = ToolChainManager()
                 
-                # Get current preference without running full toolchain check
-                preference = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+                # Initialize individual preferences if they don't exist
+                tcm.initialize_individual_tool_preferences()
                 
-                # Check individual tools and determine overall status
+                # Update dropdown values with smart defaults and current preferences
+                if hasattr(self, 'tool_preference_dropdowns'):
+                    tool_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader", "GTKWave": "gtkwave"}
+                    for tool_name, dropdown in self.tool_preference_dropdowns.items():
+                        internal_name = tool_map.get(tool_name)
+                        if internal_name and tool_name != "GTKWave":  # Handle GTKWave separately below
+                            # Check availability to set smart defaults
+                            path_available = tcm.check_tool_version_path(internal_name)
+                            direct_available = tcm.check_tool_version_direct(internal_name)
+                            
+                            # Always set smart default based on availability
+                            # Prefer PATH if available, then DIRECT, then fallback to PATH
+                            if path_available:
+                                smart_default = "PATH"
+                            elif direct_available:
+                                smart_default = "DIRECT"
+                            else:
+                                smart_default = "PATH"  # Fallback
+                            
+                            # Get current preference
+                            current_pref = tcm.get_tool_preference(internal_name)
+                            
+                            # Only update configuration if the smart default is different from current preference
+                            if current_pref != smart_default:
+                                tcm.set_tool_preference(internal_name, smart_default)
+                                logging.info(f"Updated {tool_name} preference from {current_pref} to {smart_default} based on availability")
+                                current_pref = smart_default
+                            
+                            # Update dropdown to reflect current preference
+                            dropdown.blockSignals(True)
+                            dropdown.setCurrentText(current_pref)
+                            dropdown.blockSignals(False)
+                
+                # Handle GTKWave separately (uses different config system)
+                if "GTKWave" in self.tool_preference_dropdowns:
+                    try:
+                        from cc_project_manager_pkg.simulation_manager import SimulationManager
+                        sim_manager = SimulationManager()
+                        
+                        # Check availability
+                        path_available = sim_manager.check_gtkwave_path()
+                        direct_available = sim_manager.check_gtkwave_direct()
+                        
+                        # Always set smart default for GTKWave based on availability
+                        if path_available:
+                            smart_default = "PATH"
+                        elif direct_available:
+                            smart_default = "DIRECT"
+                        else:
+                            smart_default = "PATH"  # Fallback
+                        
+                        # Get current GTKWave preference
+                        gtkwave_pref = tcm.get_tool_preference("gtkwave")
+                        
+                        # Only update configuration if the smart default is different from current preference
+                        if gtkwave_pref != smart_default:
+                            tcm.set_tool_preference("gtkwave", smart_default)
+                            logging.info(f"Updated GTKWave preference from {gtkwave_pref} to {smart_default} based on availability")
+                            gtkwave_pref = smart_default
+                        
+                        # Update GTKWave dropdown
+                        gtkwave_dropdown = self.tool_preference_dropdowns["GTKWave"]
+                        gtkwave_dropdown.blockSignals(True)
+                        gtkwave_dropdown.setCurrentText(gtkwave_pref)
+                        gtkwave_dropdown.blockSignals(False)
+                        
+                    except Exception as e:
+                        logging.warning(f"Error handling GTKWave preferences: {e}")
+                
+                # Get legacy preference for display (backward compatibility)
+                legacy_preference = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "MIXED")
+                
+                # Check individual tools status
                 tools_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader"}
-                tools_available = 0
-                total_tools = len(tools_map)
                 
                 for tool_name, tool_key in tools_map.items():
                     labels = self.tool_status_labels[tool_name]
                     
                     # Check PATH availability
-                    path_available = tcm.check_tool_version(tool_key)
+                    path_available = tcm.check_tool_version_path(tool_key)
                     if path_available:
                         labels['path'].setText("PATH: ✅ Available")
                         labels['path'].setStyleSheet("color: #4CAF50;")
@@ -3196,33 +3322,41 @@ class MainWindow(QMainWindow):
                         labels['path'].setStyleSheet("color: #F44336;")
                     
                     # Check direct path availability
-                    direct_available = False
-                    direct_path = ""
-                    if tool_key in tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}):
-                        direct_path = tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")
-                        if direct_path and os.path.exists(direct_path):
-                            direct_available = True
-                            labels['direct'].setText("DIRECT: ✅ Available")
-                            labels['direct'].setStyleSheet("color: #4CAF50;")
-                            labels['direct'].setToolTip(direct_path)
-                        elif direct_path:
-                            labels['direct'].setText("DIRECT: ❌ Path not found")
-                            labels['direct'].setStyleSheet("color: #F44336;")
-                            labels['direct'].setToolTip(direct_path)
-                        else:
-                            labels['direct'].setText("DIRECT: ⚠️ Not configured")
-                            labels['direct'].setStyleSheet("color: #FF9800;")
-                            labels['direct'].setToolTip("")
+                    direct_available = tcm.check_tool_version_direct(tool_key)
+                    direct_path = tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")
+                    if direct_available:
+                        labels['direct'].setText("DIRECT: ✅ Available")
+                        labels['direct'].setStyleSheet("color: #4CAF50;")
+                        labels['direct'].setToolTip(direct_path)
+                    elif direct_path:
+                        labels['direct'].setText("DIRECT: ❌ Path not found")
+                        labels['direct'].setStyleSheet("color: #F44336;")
+                        labels['direct'].setToolTip(direct_path)
                     else:
                         labels['direct'].setText("DIRECT: ⚠️ Not configured")
                         labels['direct'].setStyleSheet("color: #FF9800;")
                         labels['direct'].setToolTip("")
                     
-                    # Overall tool status
-                    if path_available or direct_available:
-                        labels['status'].setText("STATUS: ✅ READY")
+                    # Overall tool status based on current preference
+                    current_pref = tcm.get_tool_preference(tool_key)
+                    if current_pref == "PATH" and path_available:
+                        labels['status'].setText("STATUS: ✅ READY (using PATH)")
                         labels['status'].setStyleSheet("color: #4CAF50;")
-                        tools_available += 1
+                    elif current_pref == "DIRECT" and direct_available:
+                        labels['status'].setText("STATUS: ✅ READY (using DIRECT)")
+                        labels['status'].setStyleSheet("color: #4CAF50;")
+                    elif current_pref == "PATH" and not path_available and direct_available:
+                        labels['status'].setText("STATUS: ⚠️ PATH not available, DIRECT ready")
+                        labels['status'].setStyleSheet("color: #FF9800;")
+                    elif current_pref == "DIRECT" and not direct_available and path_available:
+                        labels['status'].setText("STATUS: ⚠️ DIRECT not configured, PATH available")
+                        labels['status'].setStyleSheet("color: #FF9800;")
+                    elif current_pref == "PATH" and not path_available:
+                        labels['status'].setText("STATUS: ❌ PATH not available")
+                        labels['status'].setStyleSheet("color: #F44336;")
+                    elif current_pref == "DIRECT" and not direct_available:
+                        labels['status'].setText("STATUS: ❌ DIRECT path not configured")
+                        labels['status'].setStyleSheet("color: #F44336;")
                     else:
                         labels['status'].setText("STATUS: ❌ NOT AVAILABLE")
                         labels['status'].setStyleSheet("color: #F44336;")
@@ -3254,13 +3388,32 @@ class MainWindow(QMainWindow):
                         gtkwave_labels['direct'].setStyleSheet("color: #FF9800;")
                         gtkwave_labels['direct'].setToolTip("")
                     
-                    # Overall GTKWave status
-                    if path_available or direct_available:
-                        gtkwave_labels['status'].setText("STATUS: ✅ READY")
+                    # Overall GTKWave status based on current preference
+                    gtkwave_pref = tcm.get_tool_preference("gtkwave")
+                    logging.debug(f"GTKWave preference: '{gtkwave_pref}', PATH available: {path_available}, DIRECT available: {direct_available}")
+                    
+                    if gtkwave_pref == "PATH" and path_available:
+                        gtkwave_labels['status'].setText("STATUS: ✅ READY (using PATH)")
                         gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
+                    elif gtkwave_pref == "DIRECT" and direct_available:
+                        gtkwave_labels['status'].setText("STATUS: ✅ READY (using DIRECT)")
+                        gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
+                    elif gtkwave_pref == "PATH" and not path_available and direct_available:
+                        gtkwave_labels['status'].setText("STATUS: ⚠️ PATH not available, DIRECT ready")
+                        gtkwave_labels['status'].setStyleSheet("color: #FF9800;")
+                    elif gtkwave_pref == "DIRECT" and not direct_available and path_available:
+                        gtkwave_labels['status'].setText("STATUS: ⚠️ DIRECT not configured, PATH available")
+                        gtkwave_labels['status'].setStyleSheet("color: #FF9800;")
+                    elif gtkwave_pref == "PATH" and not path_available:
+                        gtkwave_labels['status'].setText("STATUS: ❌ PATH not available")
+                        gtkwave_labels['status'].setStyleSheet("color: #F44336;")
+                    elif gtkwave_pref == "DIRECT" and not direct_available:
+                        gtkwave_labels['status'].setText("STATUS: ❌ DIRECT path not configured")
+                        gtkwave_labels['status'].setStyleSheet("color: #F44336;")
                     else:
                         gtkwave_labels['status'].setText("STATUS: ❌ NOT AVAILABLE")
                         gtkwave_labels['status'].setStyleSheet("color: #F44336;")
+                        logging.debug(f"GTKWave fell through to NOT AVAILABLE case - pref: '{gtkwave_pref}', PATH: {path_available}, DIRECT: {direct_available}")
                         
                 except Exception as e:
                     # Handle case where SimulationManager fails to initialize
@@ -3286,21 +3439,10 @@ class MainWindow(QMainWindow):
                     self.ghdl_yosys_label.setText("GHDL-Yosys Plugin: ❌ Check failed")
                     self.ghdl_yosys_label.setStyleSheet("color: #F44336;")
                 
-                # Update overall status based on individual tool availability
-                overall_status = tools_available >= total_tools  # All core tools must be available
-                if overall_status:
-                    self.overall_status_label.setText("Overall Status: ✅ OK")
-                    self.overall_status_label.setStyleSheet("color: #4CAF50;")
-                else:
-                    self.overall_status_label.setText(f"Overall Status: ❌ FAILED ({tools_available}/{total_tools} tools available)")
-                    self.overall_status_label.setStyleSheet("color: #F44336;")
-                
-                self.preference_label.setText(f"Preference: {preference}")
+
                     
             except Exception as e:
-                if hasattr(self, 'overall_status_label'):
-                    self.overall_status_label.setText(f"Overall Status: ❌ Error: {str(e)}")
-                    self.overall_status_label.setStyleSheet("color: #F44336;")
+                logging.error(f"Error updating toolchain status: {e}")
         
         # Run status update directly (no need for thread since it's just UI updates)
         try:

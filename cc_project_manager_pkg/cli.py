@@ -1851,15 +1851,23 @@ class MenuSystem:
             print(f"\n{self.Colors.BOLD}Overall Toolchain Check:{self.Colors.RESET}")
             overall_status = tcm.check_toolchain()
             
-            # Get the configured preference
-            preference = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
-            print(f"Current Preference: {self.Colors.CYAN}{preference}{self.Colors.RESET}")
+            # Show individual tool preferences
+            tool_prefs = tcm.config.get("cologne_chip_gatemate_tool_preferences", {})
+            legacy_pref = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+            
+            if tool_prefs:
+                print(f"Current Setup: {self.Colors.CYAN}Individual tool preferences{self.Colors.RESET}")
+                for tool, pref in tool_prefs.items():
+                    print(f"  {tool}: {self.Colors.CYAN}{pref}{self.Colors.RESET}")
+            else:
+                print(f"Current Setup: {self.Colors.CYAN}Legacy preference - {legacy_pref}{self.Colors.RESET}")
             
             # Display detailed status for each tool
             tools = {
                 "GHDL": "ghdl",
                 "Yosys": "yosys", 
-                "P&R": "p_r"
+                "P&R": "p_r",
+                "openFPGALoader": "openfpgaloader"
             }
             
             print(f"\n{self.Colors.BOLD}Individual Tool Status:{self.Colors.RESET}")
@@ -1867,31 +1875,34 @@ class MenuSystem:
             for tool_name, tool_key in tools.items():
                 print(f"\n  {self.Colors.BOLD}{tool_name}:{self.Colors.RESET}")
                 
-                # Check PATH availability using existing method
-                path_available = tcm.check_tool_version(tool_key)
+                # Show current preference for this tool
+                current_pref = tcm.get_tool_preference(tool_key)
+                print(f"    Preference: {self.Colors.CYAN}{current_pref}{self.Colors.RESET}")
+                
+                # Check PATH availability
+                path_available = tcm.check_tool_version_path(tool_key)
                 if path_available:
                     print(f"    PATH: {self.Colors.GREEN}✅ Available{self.Colors.RESET}")
                 else:
                     print(f"    PATH: {self.Colors.RED}❌ Not available{self.Colors.RESET}")
                 
                 # Check direct path availability
-                if tool_key in tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}):
-                    direct_path = tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")
-                    if direct_path and os.path.exists(direct_path):
-                        print(f"    DIRECT: {self.Colors.GREEN}✅ Available{self.Colors.RESET} ({direct_path})")
-                    elif direct_path:
-                        print(f"    DIRECT: {self.Colors.RED}❌ Path not found{self.Colors.RESET} ({direct_path})")
-                    else:
-                        print(f"    DIRECT: {self.Colors.YELLOW}⚠️ Not configured{self.Colors.RESET}")
+                direct_available = tcm.check_tool_version_direct(tool_key)
+                direct_path = tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")
+                if direct_available:
+                    print(f"    DIRECT: {self.Colors.GREEN}✅ Available{self.Colors.RESET} ({direct_path})")
+                elif direct_path:
+                    print(f"    DIRECT: {self.Colors.RED}❌ Path not found{self.Colors.RESET} ({direct_path})")
                 else:
                     print(f"    DIRECT: {self.Colors.YELLOW}⚠️ Not configured{self.Colors.RESET}")
                     
-                # Overall status for this tool
-                overall_available = path_available or (tool_key in tcm.config.get("cologne_chip_gatemate_toolchain_paths", {})
-                                                      and tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")
-                                                      and os.path.exists(tcm.config.get("cologne_chip_gatemate_toolchain_paths", {}).get(tool_key, "")))
-                if overall_available:
-                    print(f"    STATUS: {self.Colors.GREEN}✅ READY{self.Colors.RESET}")
+                # Overall status based on current preference
+                if current_pref == "PATH" and path_available:
+                    print(f"    STATUS: {self.Colors.GREEN}✅ READY (using PATH){self.Colors.RESET}")
+                elif current_pref == "DIRECT" and direct_available:
+                    print(f"    STATUS: {self.Colors.GREEN}✅ READY (using DIRECT){self.Colors.RESET}")
+                elif path_available or direct_available:
+                    print(f"    STATUS: {self.Colors.YELLOW}⚠️ Available but using {current_pref} preference{self.Colors.RESET}")
                 else:
                     print(f"    STATUS: {self.Colors.RED}❌ NOT AVAILABLE{self.Colors.RESET}")
             

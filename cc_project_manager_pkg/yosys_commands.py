@@ -176,7 +176,12 @@ class YosysCommands(ToolChainManager):
         else:
             self.synth_dir = self.config["project_structure"]["synth"]
             
-        self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+        # Get individual yosys preference, fallback to global preference for backward compatibility
+        tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+        if "yosys" in tool_prefs:
+            self.tool_access_mode = tool_prefs["yosys"]
+        else:
+            self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
         self.yosys_access = self._get_yosys_access()
         
         # Create synthesis options file

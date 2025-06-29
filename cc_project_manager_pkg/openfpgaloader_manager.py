@@ -105,7 +105,12 @@ class OpenFPGALoaderManager(ToolChainManager):
         # Ensure bitstream directory exists
         os.makedirs(self.bitstream_dir, exist_ok=True)
             
-        self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+        # Get individual openfpgaloader preference, fallback to global preference for backward compatibility
+        tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+        if "openfpgaloader" in tool_prefs:
+            self.tool_access_mode = tool_prefs["openfpgaloader"]
+        else:
+            self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
         self.loader_access = self._get_loader_access()
         
         # ToolChainManager instantiation report

@@ -210,7 +210,12 @@ class PnRCommands(ToolChainManager):
         # Ensure constraints directory exists
         os.makedirs(self.constraints_dir, exist_ok=True)
             
-        self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
+        # Get individual p_r preference, fallback to global preference for backward compatibility
+        tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
+        if "p_r" in tool_prefs:
+            self.tool_access_mode = tool_prefs["p_r"]
+        else:
+            self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
         self.pnr_access = self._get_pnr_access()
         # ToolChainManager instantiation report
         self._report_instantiation()

@@ -23,7 +23,13 @@ class SimulationManager(GHDLCommands):
         self.project_config = temp_hierarchy.load_config()
         self.config_path = temp_hierarchy._find_config_path()
         
-        # Ensure toolchain preference is set for GHDL functionality
+        # Ensure toolchain preferences are set for GHDL functionality
+        if "cologne_chip_gatemate_tool_preferences" not in self.project_config:
+            self.project_config["cologne_chip_gatemate_tool_preferences"] = {}
+        if "ghdl" not in self.project_config["cologne_chip_gatemate_tool_preferences"]:
+            self.project_config["cologne_chip_gatemate_tool_preferences"]["ghdl"] = "PATH"
+        
+        # Backward compatibility: maintain old global preference if it exists
         if "cologne_chip_gatemate_toolchain_preference" not in self.project_config:
             self.project_config["cologne_chip_gatemate_toolchain_preference"] = "PATH"
             # Save the updated config
