@@ -2709,7 +2709,7 @@ class MainWindow(QMainWindow):
         
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("GateMate Project Manager by JOCRIX v0.1 - Dark Mode")
+        self.setWindowTitle("GateMate Project Manager by JOCRIX v0.2 - Dark Mode")
         self.setGeometry(100, 100, 1200, 800)
         
         # Set application icon (if available)
@@ -3244,22 +3244,30 @@ class MainWindow(QMainWindow):
                             path_available = tcm.check_tool_version_path(internal_name)
                             direct_available = tcm.check_tool_version_direct(internal_name)
                             
-                            # Always set smart default based on availability
-                            # Prefer PATH if available, then DIRECT, then fallback to PATH
-                            if path_available:
-                                smart_default = "PATH"
-                            elif direct_available:
-                                smart_default = "DIRECT"
-                            else:
-                                smart_default = "PATH"  # Fallback
-                            
                             # Get current preference
                             current_pref = tcm.get_tool_preference(internal_name)
                             
-                            # Only update configuration if the smart default is different from current preference
-                            if current_pref != smart_default:
+                            # Only apply smart default if current preference is invalid or doesn't work
+                            needs_smart_default = False
+                            if current_pref not in ["PATH", "DIRECT"] or current_pref == "UNDEFINED":
+                                needs_smart_default = True
+                            elif current_pref == "PATH" and not path_available:
+                                needs_smart_default = True
+                            elif current_pref == "DIRECT" and not direct_available:
+                                needs_smart_default = True
+                            
+                            if needs_smart_default:
+                                # Set smart default based on availability
+                                # Prefer PATH if available, then DIRECT, then fallback to PATH
+                                if path_available:
+                                    smart_default = "PATH"
+                                elif direct_available:
+                                    smart_default = "DIRECT"
+                                else:
+                                    smart_default = "PATH"  # Fallback
+                                
                                 tcm.set_tool_preference(internal_name, smart_default)
-                                logging.info(f"Updated {tool_name} preference from {current_pref} to {smart_default} based on availability")
+                                logging.info(f"Updated {tool_name} preference from {current_pref} to {smart_default} (current preference not working)")
                                 current_pref = smart_default
                             
                             # Update dropdown to reflect current preference
@@ -3277,21 +3285,29 @@ class MainWindow(QMainWindow):
                         path_available = sim_manager.check_gtkwave_path()
                         direct_available = sim_manager.check_gtkwave_direct()
                         
-                        # Always set smart default for GTKWave based on availability
-                        if path_available:
-                            smart_default = "PATH"
-                        elif direct_available:
-                            smart_default = "DIRECT"
-                        else:
-                            smart_default = "PATH"  # Fallback
-                        
                         # Get current GTKWave preference
                         gtkwave_pref = tcm.get_tool_preference("gtkwave")
                         
-                        # Only update configuration if the smart default is different from current preference
-                        if gtkwave_pref != smart_default:
+                        # Only apply smart default if current preference is invalid or doesn't work
+                        needs_smart_default = False
+                        if gtkwave_pref not in ["PATH", "DIRECT"] or gtkwave_pref == "UNDEFINED":
+                            needs_smart_default = True
+                        elif gtkwave_pref == "PATH" and not path_available:
+                            needs_smart_default = True
+                        elif gtkwave_pref == "DIRECT" and not direct_available:
+                            needs_smart_default = True
+                        
+                        if needs_smart_default:
+                            # Set smart default for GTKWave based on availability
+                            if path_available:
+                                smart_default = "PATH"
+                            elif direct_available:
+                                smart_default = "DIRECT"
+                            else:
+                                smart_default = "PATH"  # Fallback
+                            
                             tcm.set_tool_preference("gtkwave", smart_default)
-                            logging.info(f"Updated GTKWave preference from {gtkwave_pref} to {smart_default} based on availability")
+                            logging.info(f"Updated GTKWave preference from {gtkwave_pref} to {smart_default} (current preference not working)")
                             gtkwave_pref = smart_default
                         
                         # Update GTKWave dropdown
@@ -9904,7 +9920,7 @@ Simulation Options:
         QMessageBox.about(
             self, 
             "About", 
-            "GateMate Project Manager by JOCRIX v0.1\n\n"
+            "GateMate Project Manager by JOCRIX v0.2\n\n"
             "A modern GUI for managing GateMate FPGA projects\n"
             "using Yosys, GHDL, and other open-source tools.\n\n"
             "Created by JOCRIX"

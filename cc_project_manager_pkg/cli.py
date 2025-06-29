@@ -113,7 +113,7 @@ class MenuSystem:
         print("╔═══════════════════════════════════════════════════╗")
         print(f"║         {self.Colors.CYAN}{self.Colors.BOLD}GateMate Project Manager by JOCRIX{self.Colors.RESET}        ║")
         print("║                   by JOCRIX                       ║")
-        print("║                     v0.1                          ║")
+        print("║                     v0.2                          ║")
         print("╚═══════════════════════════════════════════════════╝")
         print()
     

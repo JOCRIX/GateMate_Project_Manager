@@ -205,7 +205,7 @@ JOCRIX
 
 ## Version
 
-0.1.0
+0.2.0
 
 ## Current Issues
 - The user **must** have all the tools available, including GTKWave, inside the configuration tab or there will be errors during synthesis and implementation.

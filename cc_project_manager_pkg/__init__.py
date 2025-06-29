@@ -15,7 +15,7 @@ from .hierarchy_manager import HierarchyManager
 from .toolchain_manager import ToolChainManager
 
 # Package metadata
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "JOCRIX"
 __description__ = "FPGA project management tool for Cologne Chip GateMate"
 
