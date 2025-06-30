@@ -13,6 +13,7 @@ from .openfpgaloader_manager import OpenFPGALoaderManager
 from .simulation_manager import SimulationManager
 from .hierarchy_manager import HierarchyManager
 from .toolchain_manager import ToolChainManager
+from .boards_manager import BoardsManager
 
 # Package metadata
 __version__ = "0.2.0"
@@ -28,5 +29,6 @@ __all__ = [
     "OpenFPGALoaderManager",
     "SimulationManager", 
     "HierarchyManager",
-    "ToolChainManager"
+    "ToolChainManager",
+    "BoardsManager"
 ] 

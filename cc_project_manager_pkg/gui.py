@@ -2575,11 +2575,30 @@ class MainWindow(QMainWindow):
         self.worker_thread = None
         # Initialize constraint file mapping for tracking which constraint file was used for each design
         self.design_constraint_mapping = {}
-        # Initialize selected board (default to Olimex GateMate EVB)
-        self.selected_board = {
-            'name': 'Olimex GateMate EVB',
-            'identifier': 'olimex_gatemateevb'
-        }
+        # Initialize boards manager and selected board
+        from cc_project_manager_pkg.boards_manager import BoardsManager
+        try:
+            self.boards_manager = BoardsManager()
+            default_board = self.boards_manager.get_default_board()
+            if default_board:
+                self.selected_board = {
+                    'name': default_board['name'],
+                    'identifier': default_board['identifier']
+                }
+            else:
+                # Fallback if no boards available
+                self.selected_board = {
+                    'name': 'No boards available',
+                    'identifier': 'none'
+                }
+        except Exception as e:
+            logging.error(f"Failed to initialize BoardsManager: {e}")
+            # Fallback to hardcoded default
+            self.selected_board = {
+                'name': 'Olimex GateMate EVB',
+                'identifier': 'olimex_gatemateevb'
+            }
+            self.boards_manager = None
         
         # Load and open the most recently used project
         self.load_recent_project_on_startup()
@@ -3014,6 +3033,10 @@ class MainWindow(QMainWindow):
             ("View Upload Logs", self.view_upload_logs, "View openFPGALoader log files and programming history")
         ]
         
+        # Store references to programming buttons for dynamic enabling/disabling
+        self.program_sram_btn = None
+        self.program_flash_btn = None
+        
         for text, callback, tooltip in buttons:
             btn = QPushButton(text)
             btn.clicked.connect(callback)
@@ -3021,9 +3044,18 @@ class MainWindow(QMainWindow):
             btn.setMinimumHeight(40)
             btn.setMaximumWidth(380)  # Limit button width
             upload_layout.addWidget(btn)
+            
+            # Store references to programming buttons
+            if text == "Program SRAM":
+                self.program_sram_btn = btn
+            elif text == "Program Flash":
+                self.program_flash_btn = btn
         
         # Add stretch to keep buttons at top with consistent spacing
         upload_layout.addStretch()
+        
+        # Initialize button states based on selected board
+        self.update_programming_button_states()
         
         # Right side - Upload Status Panel
         self.upload_status_widget = self.create_upload_status_widget()
@@ -9384,11 +9416,22 @@ Simulation Options:
     def open_board_selection_dialog(self):
         """Open the FPGA board selection dialog."""
         try:
-            # Get current board configuration
-            current_board = getattr(self, 'selected_board', {'name': 'Olimex GateMate EVB', 'identifier': 'olimex_gatemateevb'})
+            # Get current board from selected_board or use default from boards manager
+            if hasattr(self, 'selected_board') and self.selected_board:
+                current_board = self.selected_board
+            elif hasattr(self, 'boards_manager') and self.boards_manager:
+                default_board = self.boards_manager.get_default_board()
+                current_board = {
+                    'name': default_board['name'] if default_board else 'No boards available',
+                    'identifier': default_board['identifier'] if default_board else 'none'
+                }
+            else:
+                # Final fallback
+                current_board = {'name': 'Olimex GateMate EVB', 'identifier': 'olimex_gatemateevb'}
             
-            # Open the dialog
-            dialog = FPGABoardSelectionDialog(self, current_board)
+            # Open the dialog with boards manager
+            boards_manager = getattr(self, 'boards_manager', None)
+            dialog = FPGABoardSelectionDialog(self, current_board, boards_manager)
             
             if dialog.exec_() == QDialog.Accepted:
                 # Update the selected board
@@ -9411,6 +9454,9 @@ Simulation Options:
                 # Update other upload status elements (but don't run full device detection again)
                 self.refresh_upload_status_without_device_check()
                 
+                # Update programming button states based on new board capabilities
+                self.update_programming_button_states()
+                
                 logging.info(f"✅ Board selection updated: {self.selected_board['name']} ({self.selected_board['identifier']})")
                 
                 # Show confirmation message with connection status
@@ -9424,6 +9470,65 @@ Simulation Options:
         except Exception as e:
             logging.error(f"Error opening board selection dialog: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open board selection dialog:\n\n{str(e)}")
+    
+    def update_programming_button_states(self):
+        """Update Program SRAM/Flash button states based on selected board capabilities."""
+        try:
+            if not hasattr(self, 'program_sram_btn') or not hasattr(self, 'program_flash_btn'):
+                return  # Buttons not yet created
+            
+            if not self.program_sram_btn or not self.program_flash_btn:
+                return  # Button references not available
+                
+            # Get board capabilities from boards manager
+            if hasattr(self, 'boards_manager') and self.boards_manager and hasattr(self, 'selected_board'):
+                board_identifier = self.selected_board.get('identifier', '')
+                if board_identifier and board_identifier != 'none':
+                    board_details = self.boards_manager.get_board_details(board_identifier)
+                    
+                    if board_details and 'programming_modes' in board_details:
+                        programming_modes = board_details['programming_modes']
+                        
+                        # Enable/disable SRAM button
+                        sram_supported = 'sram' in programming_modes
+                        self.program_sram_btn.setEnabled(sram_supported)
+                        if sram_supported:
+                            self.program_sram_btn.setStyleSheet("")  # Default styling
+                            self.program_sram_btn.setToolTip("Program bitstream to FPGA SRAM (volatile)")
+                        else:
+                            self.program_sram_btn.setStyleSheet("background-color: #4a4a4a; color: #888888;")
+                            self.program_sram_btn.setToolTip("SRAM programming not supported by this board")
+                        
+                        # Enable/disable Flash button
+                        flash_supported = 'flash' in programming_modes
+                        self.program_flash_btn.setEnabled(flash_supported)
+                        if flash_supported:
+                            self.program_flash_btn.setStyleSheet("")  # Default styling
+                            self.program_flash_btn.setToolTip("Program bitstream to FPGA Flash (non-volatile)")
+                        else:
+                            self.program_flash_btn.setStyleSheet("background-color: #4a4a4a; color: #888888;")
+                            self.program_flash_btn.setToolTip("Flash programming not supported by this board")
+                        
+                        logging.info(f"Updated programming buttons - SRAM: {sram_supported}, Flash: {flash_supported}")
+                        return
+            
+            # Fallback: enable both buttons if no board info available
+            self.program_sram_btn.setEnabled(True)
+            self.program_flash_btn.setEnabled(True)
+            self.program_sram_btn.setStyleSheet("")
+            self.program_flash_btn.setStyleSheet("")
+            self.program_sram_btn.setToolTip("Program bitstream to FPGA SRAM (volatile)")
+            self.program_flash_btn.setToolTip("Program bitstream to FPGA Flash (non-volatile)")
+            
+        except Exception as e:
+            logging.error(f"Error updating programming button states: {e}")
+            # Fallback: enable both buttons on error
+            if hasattr(self, 'program_sram_btn') and self.program_sram_btn:
+                self.program_sram_btn.setEnabled(True)
+                self.program_sram_btn.setStyleSheet("")
+            if hasattr(self, 'program_flash_btn') and self.program_flash_btn:
+                self.program_flash_btn.setEnabled(True)
+                self.program_flash_btn.setStyleSheet("")
     
     def program_sram(self):
         """Program bitstream to FPGA SRAM (volatile)."""
@@ -11825,28 +11930,52 @@ For more accurate power analysis:
 class FPGABoardSelectionDialog(QDialog):
     """Dialog for FPGA board selection and configuration."""
     
-    def __init__(self, parent=None, current_board=None):
+    def __init__(self, parent=None, current_board=None, boards_manager=None):
         super().__init__(parent)
         self.setWindowTitle("FPGA Board Selection")
         self.setModal(True)
-        self.resize(550, 500)  # Increased height to accommodate larger results area
-        self.current_board = current_board or {'name': 'Olimex GateMate EVB', 'identifier': 'olimex_gatemateevb'}
+        self.resize(800, 500)  # Increased width to accommodate board details panel
+        
+        # Store boards manager reference
+        self.boards_manager = boards_manager
+        
+        # Set current board - use provided board or get default from boards manager
+        if current_board:
+            self.current_board = current_board
+        elif self.boards_manager:
+            default_board = self.boards_manager.get_default_board()
+            self.current_board = {
+                'name': default_board['name'] if default_board else 'No boards available',
+                'identifier': default_board['identifier'] if default_board else 'none'
+            }
+        else:
+            # Fallback if no boards manager
+            self.current_board = {'name': 'Olimex GateMate EVB', 'identifier': 'olimex_gatemateevb'}
+        
         self.selected_board = self.current_board.copy()
         self.init_ui()
     
     def init_ui(self):
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
         
         # Title and description
         title = QLabel("FPGA Board Selection")
         title.setFont(QFont("Arial", 14, QFont.Bold))
         title.setStyleSheet("color: #4CAF50; margin-bottom: 10px;")
-        layout.addWidget(title)
+        main_layout.addWidget(title)
         
         description = QLabel("Select your FPGA board and test connectivity before programming operations.")
         description.setWordWrap(True)
         description.setStyleSheet("color: #888888; margin-bottom: 15px;")
-        layout.addWidget(description)
+        main_layout.addWidget(description)
+        
+        # Create horizontal layout for main content (left and right panels)
+        content_layout = QHBoxLayout()
+        
+        # Left panel - Board selection and connection testing
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(400)
+        left_layout = QVBoxLayout(left_panel)
         
         # Board selection section
         board_group = QGroupBox("Board Selection")
@@ -11859,8 +11988,7 @@ class FPGABoardSelectionDialog(QDialog):
         board_select_layout.addWidget(board_label)
         
         self.board_combo = QComboBox()
-        self.board_combo.addItem("Olimex GateMate EVB", "olimex_gatemateevb")
-        self.board_combo.setCurrentIndex(0)
+        self._populate_board_combo()
         self.board_combo.currentTextChanged.connect(self._on_board_changed)
         board_select_layout.addWidget(self.board_combo)
         
@@ -11871,7 +11999,7 @@ class FPGABoardSelectionDialog(QDialog):
         self.board_info_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin: 5px 0px;")
         board_layout.addWidget(self.board_info_label)
         
-        layout.addWidget(board_group)
+        left_layout.addWidget(board_group)
         
         # Connection testing section
         connection_group = QGroupBox("Connection Testing")
@@ -11901,8 +12029,8 @@ class FPGABoardSelectionDialog(QDialog):
         
         # Results area
         self.results_text = QTextEdit()
-        self.results_text.setMinimumHeight(200)  # Ensure adequate height
-        self.results_text.setMaximumHeight(300)  # Allow more space but still constrain
+        self.results_text.setMinimumHeight(150)  # Reduced height for left panel
+        self.results_text.setMaximumHeight(200)  # Constrain to fit with board details
         self.results_text.setReadOnly(True)
         self.results_text.setFont(QFont("Consolas", 9))
         self.results_text.setStyleSheet("""
@@ -11915,7 +12043,42 @@ class FPGABoardSelectionDialog(QDialog):
         self.results_text.setPlaceholderText("Test results will appear here...")
         connection_layout.addWidget(self.results_text)
         
-        layout.addWidget(connection_group)
+        left_layout.addWidget(connection_group)
+        
+        # Add left panel to content layout
+        content_layout.addWidget(left_panel)
+        
+        # Right panel - Board details
+        right_panel = QWidget()
+        right_panel.setMinimumWidth(350)
+        right_layout = QVBoxLayout(right_panel)
+        
+        # Board details section
+        details_group = QGroupBox("Board Details")
+        details_layout = QVBoxLayout(details_group)
+        
+        # Board details display
+        self.board_details_text = QTextEdit()
+        self.board_details_text.setReadOnly(True)
+        self.board_details_text.setFont(QFont("Consolas", 9))
+        self.board_details_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555;
+                padding: 8px;
+            }
+        """)
+        self.board_details_text.setPlaceholderText("Board details will appear here...")
+        details_layout.addWidget(self.board_details_text)
+        
+        right_layout.addWidget(details_group)
+        
+        # Add right panel to content layout  
+        content_layout.addWidget(right_panel)
+        
+        # Add content layout to main layout
+        main_layout.addLayout(content_layout)
         
         # Dialog buttons
         button_layout = QHBoxLayout()
@@ -11932,7 +12095,47 @@ class FPGABoardSelectionDialog(QDialog):
         apply_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
         button_layout.addWidget(apply_btn)
         
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
+        
+        # Initialize board details display
+        self._update_board_details()
+    
+    def _populate_board_combo(self):
+        """Populate the board combo box with available boards from BoardsManager."""
+        self.board_combo.clear()
+        
+        if self.boards_manager:
+            try:
+                # Get available boards from the manager
+                board_display_info = self.boards_manager.get_board_display_info()
+                
+                if board_display_info:
+                    for board_info in board_display_info:
+                        # Add board to combo box with name as text and identifier as data
+                        display_name = board_info['name']
+                        if board_info.get('verified', False):
+                            display_name += " ✓"  # Add checkmark for verified boards
+                        
+                        self.board_combo.addItem(display_name, board_info['identifier'])
+                    
+                    # Set current selection to match the current board
+                    current_identifier = self.current_board.get('identifier', '')
+                    for i in range(self.board_combo.count()):
+                        if self.board_combo.itemData(i) == current_identifier:
+                            self.board_combo.setCurrentIndex(i)
+                            break
+                else:
+                    # No boards available
+                    self.board_combo.addItem("No boards available", "none")
+                    
+            except Exception as e:
+                import logging
+                logging.error(f"Error populating board combo: {e}")
+                # Fallback to default board
+                self.board_combo.addItem("Olimex GateMate EVB", "olimex_gatemateevb")
+        else:
+            # No boards manager available - use fallback
+            self.board_combo.addItem("Olimex GateMate EVB", "olimex_gatemateevb")
     
     def _on_board_changed(self, board_name):
         """Handle board selection change."""
@@ -11947,7 +12150,84 @@ class FPGABoardSelectionDialog(QDialog):
         self.connection_status_label.setText("Connection: Not tested")
         self.connection_status_label.setStyleSheet("font-weight: bold; color: #888888; margin: 5px 0px;")
         self.results_text.clear()
+        
+        # Update board details display
+        self._update_board_details()
     
+    def _update_board_details(self):
+        """Update the board details display with information from boards configuration."""
+        try:
+            if not self.boards_manager or not self.selected_board:
+                self.board_details_text.setText("No board details available")
+                return
+            
+            board_identifier = self.selected_board.get('identifier', '')
+            if not board_identifier or board_identifier == 'none':
+                self.board_details_text.setText("No board selected")
+                return
+            
+            # Get board details from boards manager
+            board_details = self.boards_manager.get_board_details(board_identifier)
+            
+            if not board_details:
+                self.board_details_text.setText(f"Board details not found for: {board_identifier}")
+                return
+            
+            # Format board details for display
+            details_text = []
+            details_text.append("═══ BOARD INFORMATION ═══\n")
+            
+            # Basic information
+            details_text.append(f"Name: {board_details.get('name', 'N/A')}")
+            details_text.append(f"Manufacturer: {board_details.get('manufacturer', 'N/A')}")
+            details_text.append(f"Description: {board_details.get('description', 'N/A')}")
+            details_text.append(f"FPGA Family: {board_details.get('fpga_family', 'N/A')}")
+            details_text.append("")
+            
+            # openFPGALoader configuration
+            details_text.append("═══ OPENFPGALOADER CONFIG ═══\n")
+            details_text.append(f"Board Identifier: {board_details.get('openFPGALoader_identifier', 'N/A')}")
+            details_text.append(f"Default Interface: {board_details.get('default_interface', 'N/A')}")
+            details_text.append("")
+            
+            # Supported interfaces
+            if 'supported_interfaces' in board_details:
+                interfaces = board_details['supported_interfaces']
+                if interfaces:
+                    details_text.append("Supported Interfaces:")
+                    for interface in interfaces:
+                        details_text.append(f"  • {interface}")
+                    details_text.append("")
+            
+            # Programming modes
+            if 'programming_modes' in board_details:
+                modes = board_details['programming_modes']
+                if modes:
+                    details_text.append("Programming Modes:")
+                    for mode in modes:
+                        details_text.append(f"  • {mode.upper()}")
+                    details_text.append("")
+            
+            # Verification status
+            verified = board_details.get('verified', False)
+            status_icon = "✅" if verified else "⚠️"
+            details_text.append(f"Verification Status: {status_icon} {'Verified' if verified else 'Not Verified'}")
+            
+            # Notes
+            if 'notes' in board_details and board_details['notes']:
+                details_text.append("")
+                details_text.append("═══ NOTES ═══\n")
+                details_text.append(board_details['notes'])
+            
+            # Join all details with newlines
+            formatted_details = "\n".join(details_text)
+            self.board_details_text.setText(formatted_details)
+            
+        except Exception as e:
+            import logging
+            logging.error(f"Error updating board details: {e}")
+            self.board_details_text.setText(f"Error displaying board details: {str(e)}")
+
     def test_board_connection(self):
         """Test connection to the selected board."""
         try:
