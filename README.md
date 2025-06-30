@@ -84,7 +84,7 @@ cc_project_manager/
    - Cologne Chip GateMate tools (for implementation)
 
 5. **Get openFPGALoader for uploading to the FPGA**
-   - Uploading to a development board with openFPGALoader may require additional software, like dirtyJTAG, Zadig. See the documentation
+   - Uploading bitstreams to a development board with openFPGALoader may require additional software, like dirtyJTAG, Zadig. See the documentation
      for the development board you got.
 
 ## Usage
