@@ -250,11 +250,26 @@ class BoardsManager:
             True if added successfully, False otherwise
         """
         try:
+            # Validate board configuration
+            validation_errors = self.validate_board_config(board_config)
+            if validation_errors:
+                self.boards_logger.error(f"Board configuration validation failed: {validation_errors}")
+                return False
+            
             boards = self.boards_config.get('boards_configuration', {}).get('boards', {})
             
             if board_id in boards:
                 self.boards_logger.warning(f"Board {board_id} already exists, use update_board instead")
                 return False
+            
+            # For custom boards, ensure they have the correct structure
+            if board_config.get('custom_board', False):
+                # Set default openFPGALoader_identifier to cable_type for compatibility
+                if 'openFPGALoader_identifier' not in board_config:
+                    board_config['openFPGALoader_identifier'] = board_config.get('cable_type', 'custom')
+                    
+                # Mark as custom board for special handling
+                board_config['custom_board'] = True
             
             boards[board_id] = board_config
             self._save_configuration()
@@ -377,10 +392,15 @@ class BoardsManager:
         """
         errors = []
         
-        required_fields = ['name', 'openFPGALoader_identifier']
+        # Required fields for all boards
+        required_fields = ['name']
         for field in required_fields:
             if field not in board_config:
                 errors.append(f"Missing required field: {field}")
+        
+        # Check for either openFPGALoader_identifier (standard boards) or cable_type (custom boards)
+        if 'openFPGALoader_identifier' not in board_config and 'cable_type' not in board_config:
+            errors.append("Board must have either 'openFPGALoader_identifier' or 'cable_type'")
         
         # Validate supported interfaces
         if 'supported_interfaces' in board_config:
@@ -395,5 +415,70 @@ class BoardsManager:
             for mode in board_config['programming_modes']:
                 if mode not in valid_modes:
                     errors.append(f"Invalid programming mode: {mode}")
+        
+        # Custom board specific validations
+        if board_config.get('custom_board', False):
+            if 'cable_type' not in board_config:
+                errors.append("Custom boards must specify 'cable_type'")
+            
+            # Validate pin mapping for specific cable types
+            cable_type = board_config.get('cable_type', '')
+            if cable_type in ['ft232RL', 'ft231X'] and 'pin_mapping' not in board_config:
+                errors.append(f"Cable type '{cable_type}' requires 'pin_mapping'")
+            
+            # Validate JTAG frequency if provided
+            if 'jtag_frequency' in board_config:
+                try:
+                    freq = int(board_config['jtag_frequency'])
+                    if freq <= 0:
+                        errors.append("JTAG frequency must be positive")
+                except (ValueError, TypeError):
+                    errors.append("JTAG frequency must be a valid number")
+            
+            # Validate USB device selection if provided
+            if 'usb_device_selection' in board_config:
+                usb_config = board_config['usb_device_selection']
+                
+                # Validate VID/PID
+                if 'vid' in usb_config or 'pid' in usb_config:
+                    if not (usb_config.get('vid') and usb_config.get('pid')):
+                        errors.append("Both VID and PID must be provided together")
+                    else:
+                        try:
+                            int(usb_config['vid'], 16)
+                            int(usb_config['pid'], 16)
+                        except ValueError:
+                            errors.append("VID and PID must be valid hexadecimal values")
+                
+                # Validate cable index
+                if 'cable_index' in usb_config:
+                    try:
+                        idx = int(usb_config['cable_index'])
+                        if idx < 0:
+                            errors.append("Cable index must be non-negative")
+                    except (ValueError, TypeError):
+                        errors.append("Cable index must be a valid number")
+                
+                # Validate bus/device
+                if 'bus' in usb_config or 'device' in usb_config:
+                    if not (usb_config.get('bus') and usb_config.get('device')):
+                        errors.append("Both bus and device numbers must be provided together")
+                    else:
+                        try:
+                            bus = int(usb_config['bus'])
+                            dev = int(usb_config['device'])
+                            if bus <= 0 or dev <= 0:
+                                errors.append("Bus and device numbers must be positive")
+                        except (ValueError, TypeError):
+                            errors.append("Bus and device numbers must be valid numbers")
+                
+                # Validate FTDI channel
+                if 'ftdi_channel' in usb_config:
+                    try:
+                        channel = int(usb_config['ftdi_channel'])
+                        if channel < 0 or channel > 3:
+                            errors.append("FTDI channel must be between 0 and 3")
+                    except (ValueError, TypeError):
+                        errors.append("FTDI channel must be a valid number")
         
         return errors 

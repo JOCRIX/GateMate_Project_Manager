@@ -3026,6 +3026,7 @@ class MainWindow(QMainWindow):
         
         buttons = [
             ("FPGA Board Selection", self.open_board_selection_dialog, "Select and configure FPGA board for programming"),
+            ("Add Custom Board", self.open_add_custom_board_dialog, "Add a new custom board configuration"),
             ("Program SRAM", self.program_sram, "Program bitstream to FPGA SRAM (volatile)"),
             ("Program Flash", self.program_flash, "Program bitstream to FPGA Flash (non-volatile)"),
             ("Detect Devices", self.detect_fpga_devices, "Detect connected FPGA devices and cables"),
@@ -7326,6 +7327,82 @@ class MainWindow(QMainWindow):
                 else:
                     self.design_constraint_mapping[design_name] = "None"
             
+            def validate_constraint_file_for_pnr(pnr, constraint_file, design_name):
+                """
+                Validate constraint file before running place and route.
+                
+                Args:
+                    pnr: PnRCommands instance
+                    constraint_file: Selected constraint file name or None
+                    design_name: Design name for error messages
+                    
+                Returns:
+                    tuple: (is_valid: bool, error_message: str or None)
+                """
+                try:
+                    # Determine which constraint file will be used
+                    constraint_file_path = None
+                    constraint_source = ""
+                    
+                    if constraint_file and constraint_file != "default" and constraint_file != "none":
+                        # Specific constraint file selected
+                        constraint_file_path = os.path.join(pnr.constraints_dir, constraint_file)
+                        constraint_source = f"selected constraint file: {constraint_file}"
+                    else:
+                        # Auto-detection logic (same as in PnRCommands.place_and_route)
+                        default_constraint_file = pnr.get_default_constraint_file_path()
+                        available_constraints = pnr.list_available_constraint_files()
+                        
+                        # Check default constraint file first
+                        if os.path.exists(default_constraint_file):
+                            constraint_file_path = default_constraint_file
+                            constraint_source = "default constraint file"
+                        elif available_constraints:
+                            # Use first available constraint file
+                            constraint_file_path = pnr.get_constraint_file_path(available_constraints[0])
+                            constraint_source = f"first available constraint file: {available_constraints[0]}"
+                    
+                    if not constraint_file_path:
+                        # No constraint file will be used - this is often OK, let P&R handle it
+                        return True, None
+                    
+                    if not os.path.exists(constraint_file_path):
+                        error_msg = f"❌ CONSTRAINT FILE NOT FOUND\n\n"
+                        error_msg += f"The {constraint_source} was not found:\n"
+                        error_msg += f"Expected: {constraint_file_path}\n\n"
+                        error_msg += "SOLUTIONS:\n"
+                        error_msg += "1. Check that the constraint file exists\n"
+                        error_msg += "2. Create a constraint file with pin assignments\n"
+                        error_msg += "3. Select a different constraint file\n"
+                        error_msg += "4. Or select 'none' if no constraints are needed"
+                        return False, error_msg
+                    
+                    # Check if constraint file has active constraints
+                    if not pnr.has_active_constraints(constraint_file_path):
+                        error_msg = f"❌ CONSTRAINT FILE IS EMPTY OR ALL COMMENTED OUT\n\n"
+                        error_msg += f"The {constraint_source} exists but contains no active pin assignments:\n"
+                        error_msg += f"File: {constraint_file_path}\n\n"
+                        error_msg += "Place and Route typically requires active pin constraints to succeed.\n"
+                        error_msg += "The file either:\n"
+                        error_msg += "• Contains only comments (lines starting with #)\n"
+                        error_msg += "• Contains only empty lines\n"
+                        error_msg += "• Has no Net, Pin_in, Pin_out, Pin_triout, or Pin_inout assignments\n\n"
+                        error_msg += "SOLUTIONS:\n"
+                        error_msg += "1. Edit the constraint file and add pin assignments like:\n"
+                        error_msg += "   Pin_in   clk      IOB_13\n"
+                        error_msg += "   Pin_out  led      IOB_25\n"
+                        error_msg += "2. Uncomment existing pin assignments in the file\n"
+                        error_msg += "3. Create a new constraint file with active constraints\n"
+                        error_msg += "4. Select a different constraint file with active constraints\n"
+                        error_msg += "5. Or proceed anyway (may cause P&R to fail)"
+                        return False, error_msg
+                    
+                    return True, None
+                    
+                except Exception as e:
+                    logging.error(f"Error validating constraint file: {e}")
+                    return True, None  # Don't block P&R on validation errors
+
             def pnr_operation():
                 try:
                     logging.info("=" * 80)
@@ -7354,6 +7431,33 @@ class MainWindow(QMainWindow):
                         # The constraint file selection will be passed to the PnR tool
                     else:
                         logging.info("🔗 Using default constraint file detection")
+                    
+                    # VALIDATE CONSTRAINT FILE BEFORE PROCEEDING
+                    # Check if constraint file is effectively empty (no active constraints)
+                    constraint_is_valid, constraint_error = validate_constraint_file_for_pnr(pnr, constraint_file, design_name)
+                    if not constraint_is_valid:
+                        # Log to both general log and implementation log
+                        logging.error(constraint_error)
+                        
+                        # Ensure error gets to implementation log with timestamp
+                        pnr.pnr_logger.error(constraint_error)
+                        # Force flush the logger to ensure it's written immediately
+                        for handler in pnr.pnr_logger.handlers:
+                            handler.flush()
+                        
+                        # Also write directly to implementation log file as backup
+                        try:
+                            import datetime
+                            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+                            log_entry = f"{timestamp} - ERROR - {constraint_error}\n"
+                            impl_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
+                            with open(impl_log_path, 'a', encoding='utf-8') as f:
+                                f.write(log_entry)
+                                f.flush()
+                        except Exception as log_write_error:
+                            logging.warning(f"Could not write constraint error to implementation log: {log_write_error}")
+                        
+                        raise Exception(constraint_error)
                     
                     if impl_params['generate_bitstream'] and impl_params['run_timing_analysis'] and impl_params['generate_sim_netlist']:
                         # Run full implementation flow
@@ -9471,6 +9575,24 @@ Simulation Options:
             logging.error(f"Error opening board selection dialog: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open board selection dialog:\n\n{str(e)}")
     
+    def open_add_custom_board_dialog(self):
+        """Open the add custom board configuration dialog."""
+        try:
+            dialog = CustomBoardDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                board_config = dialog.get_board_config()
+                if self.boards_manager.add_board(board_config['identifier'], board_config):
+                    QMessageBox.information(self, "Success", 
+                                          f"Custom board '{board_config['name']}' added successfully!")
+                    # Update programming button states for the new board
+                    self.update_programming_button_states()
+                else:
+                    QMessageBox.warning(self, "Warning", 
+                                      f"Failed to add board. A board with identifier '{board_config['identifier']}' may already exist.")
+        except Exception as e:
+            logging.error(f"Error opening add custom board dialog: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to open add custom board dialog:\n\n{str(e)}")
+    
     def update_programming_button_states(self):
         """Update Program SRAM/Flash button states based on selected board capabilities."""
         try:
@@ -9547,16 +9669,15 @@ Simulation Options:
             # Use selected board for programming
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(device=board_identifier)
+            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Programming {design_name} to SRAM on {board_name}: {bitstream_path}")
             
-            # Program SRAM with board specification and verbose output for progress tracking
-            board_options = ["-b", board_identifier, "--verbose"]
-            result = upload_manager.program_sram(bitstream_path, options=board_options)
+            # Program SRAM with verbose output for progress tracking
+            result = upload_manager.program_sram(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully programmed {design_name} to {board_name} SRAM")
@@ -9584,16 +9705,15 @@ Simulation Options:
             # Use selected board for programming
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(device=board_identifier)
+            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Programming {design_name} to Flash on {board_name}: {bitstream_path}")
             
-            # Program Flash with board specification and verbose output for progress tracking
-            board_options = ["-b", board_identifier, "--verbose"]
-            result = upload_manager.program_flash(bitstream_path, options=board_options)
+            # Program Flash with verbose output for progress tracking
+            result = upload_manager.program_flash(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully programmed {design_name} to {board_name} Flash")
@@ -9613,7 +9733,7 @@ Simulation Options:
             # Use selected board for device detection
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(device=board_identifier)
+            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
             
             logging.info(f"Detecting devices for {board_name}...")
             
@@ -9647,16 +9767,15 @@ Simulation Options:
             # Use selected board for verification
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(device=board_identifier)
+            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Verifying {design_name} on {board_name}: {bitstream_path}")
             
-            # Verify bitstream with board specification and verbose output for progress tracking
-            board_options = ["-b", board_identifier, "--verbose"]
-            result = upload_manager.verify_bitstream(bitstream_path, options=board_options)
+            # Verify bitstream with verbose output for progress tracking
+            result = upload_manager.verify_bitstream(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully verified {design_name} on {board_name}")
@@ -12213,6 +12332,27 @@ class FPGABoardSelectionDialog(QDialog):
             status_icon = "✅" if verified else "⚠️"
             details_text.append(f"Verification Status: {status_icon} {'Verified' if verified else 'Not Verified'}")
             
+            # USB device selection for custom boards
+            if board_details.get('custom_board', False) and 'usb_device_selection' in board_details:
+                details_text.append("")
+                details_text.append("═══ USB DEVICE SELECTION ═══\n")
+                usb_config = board_details['usb_device_selection']
+                
+                if usb_config.get('vid') and usb_config.get('pid'):
+                    details_text.append(f"VID:PID: {usb_config['vid']}:{usb_config['pid']}")
+                
+                if usb_config.get('ftdi_serial'):
+                    details_text.append(f"FTDI Serial: {usb_config['ftdi_serial']}")
+                
+                if usb_config.get('cable_index') is not None:
+                    details_text.append(f"Cable Index: {usb_config['cable_index']}")
+                
+                if usb_config.get('bus') and usb_config.get('device'):
+                    details_text.append(f"Bus:Device: {usb_config['bus']}:{usb_config['device']}")
+                
+                if usb_config.get('ftdi_channel') is not None:
+                    details_text.append(f"FTDI Channel: {usb_config['ftdi_channel']}")
+            
             # Notes
             if 'notes' in board_details and board_details['notes']:
                 details_text.append("")
@@ -12467,6 +12607,637 @@ class FPGABoardSelectionDialog(QDialog):
     def was_connection_successful(self):
         """Check if the connection test was successful."""
         return getattr(self, 'connection_successful', False)
+
+
+class CustomBoardDialog(QDialog):
+    """Dialog for adding custom board configurations."""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Custom Board Configuration")
+        self.setModal(True)
+        self.setFixedSize(600, 700)
+        self.init_ui()
+        self.load_cable_options()
+        
+    def init_ui(self):
+        """Initialize the dialog UI."""
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title_label = QLabel("🔧 Add Custom Board Configuration")
+        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        title_label.setStyleSheet("color: #4CAF50; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # Description
+        desc_label = QLabel("Create a custom board configuration using openFPGALoader cable types.")
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("color: #888888; margin-bottom: 20px;")
+        layout.addWidget(desc_label)
+        
+        # Scroll area for form
+        scroll = QScrollArea()
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+        
+        # Basic Information Group
+        basic_group = QGroupBox("Basic Information")
+        basic_layout = QFormLayout(basic_group)
+        
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., My Custom Board")
+        basic_layout.addRow("Board Name:", self.name_edit)
+        
+        self.identifier_edit = QLineEdit()
+        self.identifier_edit.setPlaceholderText("e.g., custom_my_board (lowercase, no spaces)")
+        basic_layout.addRow("Board Identifier:", self.identifier_edit)
+        
+        self.manufacturer_edit = QLineEdit()
+        self.manufacturer_edit.setPlaceholderText("e.g., Custom Boards Inc")
+        basic_layout.addRow("Manufacturer:", self.manufacturer_edit)
+        
+        self.description_edit = QLineEdit()
+        self.description_edit.setPlaceholderText("Brief description of the board")
+        basic_layout.addRow("Description:", self.description_edit)
+        
+        scroll_layout.addWidget(basic_group)
+        
+        # openFPGALoader Configuration Group
+        config_group = QGroupBox("openFPGALoader Configuration")
+        config_layout = QFormLayout(config_group)
+        
+        self.cable_combo = QComboBox()
+        config_layout.addRow("Cable Type:", self.cable_combo)
+        
+        # Advanced configuration section
+        advanced_frame = QFrame()
+        advanced_layout = QFormLayout(advanced_frame)
+        
+        self.freq_edit = QLineEdit()
+        self.freq_edit.setPlaceholderText("e.g., 6000000 (optional)")
+        advanced_layout.addRow("JTAG Frequency (Hz):", self.freq_edit)
+        
+        self.pins_edit = QLineEdit()
+        self.pins_edit.setPlaceholderText("e.g., TDI:TDO:TCK:TMS (for ft232RL/ft231X)")
+        advanced_layout.addRow("Pin Mapping:", self.pins_edit)
+        
+        self.fpga_part_edit = QLineEdit()
+        self.fpga_part_edit.setPlaceholderText("e.g., xc7a35tcsg324 (optional)")
+        advanced_layout.addRow("FPGA Part:", self.fpga_part_edit)
+        
+        config_layout.addRow(advanced_frame)
+        scroll_layout.addWidget(config_group)
+        
+        # USB Device Selection Group
+        usb_group = QGroupBox("USB Device Selection")
+        usb_layout = QVBoxLayout(usb_group)
+        
+        # Detection method selection
+        method_layout = QHBoxLayout()
+        method_layout.addWidget(QLabel("Detection Method:"))
+        
+        self.detection_method_combo = QComboBox()
+        self.detection_method_combo.addItems([
+            "Auto (use first available)",
+            "VID/PID (Vendor/Product ID)",
+            "Serial Number (FTDI)",
+            "Cable Index",
+            "Bus/Device Number"
+        ])
+        self.detection_method_combo.currentTextChanged.connect(self.on_detection_method_changed)
+        method_layout.addWidget(self.detection_method_combo)
+        
+        usb_layout.addLayout(method_layout)
+        
+        # Device scanning section
+        scan_layout = QHBoxLayout()
+        self.scan_devices_btn = QPushButton("🔍 Scan for USB Devices")
+        self.scan_devices_btn.clicked.connect(self.scan_usb_devices)
+        self.scan_devices_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; }")
+        scan_layout.addWidget(self.scan_devices_btn)
+        
+        self.scan_status_label = QLabel("Click scan to detect available devices")
+        self.scan_status_label.setStyleSheet("color: #888888; font-style: italic;")
+        scan_layout.addWidget(self.scan_status_label)
+        scan_layout.addStretch()
+        
+        usb_layout.addLayout(scan_layout)
+        
+        # Detected devices dropdown
+        detected_layout = QHBoxLayout()
+        detected_layout.addWidget(QLabel("Detected Devices:"))
+        
+        self.detected_devices_combo = QComboBox()
+        self.detected_devices_combo.addItem("No devices scanned yet")
+        self.detected_devices_combo.currentTextChanged.connect(self.on_detected_device_selected)
+        detected_layout.addWidget(self.detected_devices_combo)
+        
+        usb_layout.addLayout(detected_layout)
+        
+        # Manual override section
+        manual_frame = QFrame()
+        manual_frame.setFrameStyle(QFrame.Box)
+        manual_layout = QFormLayout(manual_frame)
+        
+        manual_title = QLabel("Manual Override:")
+        manual_title.setFont(QFont("Arial", 9, QFont.Bold))
+        manual_layout.addRow(manual_title)
+        
+        # USB device selection fields
+        usb_fields_layout = QHBoxLayout()
+        
+        self.vid_edit = QLineEdit()
+        self.vid_edit.setPlaceholderText("1234")
+        self.vid_edit.setMaximumWidth(80)
+        usb_fields_layout.addWidget(QLabel("VID:"))
+        usb_fields_layout.addWidget(self.vid_edit)
+        
+        self.pid_edit = QLineEdit()
+        self.pid_edit.setPlaceholderText("5678")
+        self.pid_edit.setMaximumWidth(80)
+        usb_fields_layout.addWidget(QLabel("PID:"))
+        usb_fields_layout.addWidget(self.pid_edit)
+        
+        usb_fields_layout.addStretch()
+        manual_layout.addRow(usb_fields_layout)
+        
+        self.serial_edit = QLineEdit()
+        self.serial_edit.setPlaceholderText("A12345 (for FTDI devices)")
+        manual_layout.addRow("Serial Number:", self.serial_edit)
+        
+        device_fields_layout = QHBoxLayout()
+        
+        self.cable_index_edit = QLineEdit()
+        self.cable_index_edit.setPlaceholderText("0")
+        self.cable_index_edit.setMaximumWidth(60)
+        device_fields_layout.addWidget(QLabel("Cable Index:"))
+        device_fields_layout.addWidget(self.cable_index_edit)
+        
+        self.bus_edit = QLineEdit()
+        self.bus_edit.setPlaceholderText("2")
+        self.bus_edit.setMaximumWidth(60)
+        device_fields_layout.addWidget(QLabel("Bus:"))
+        device_fields_layout.addWidget(self.bus_edit)
+        
+        self.device_edit = QLineEdit()
+        self.device_edit.setPlaceholderText("5")
+        self.device_edit.setMaximumWidth(60)
+        device_fields_layout.addWidget(QLabel("Device:"))
+        device_fields_layout.addWidget(self.device_edit)
+        
+        self.ftdi_channel_edit = QLineEdit()
+        self.ftdi_channel_edit.setPlaceholderText("0")
+        self.ftdi_channel_edit.setMaximumWidth(60)
+        device_fields_layout.addWidget(QLabel("FTDI Ch:"))
+        device_fields_layout.addWidget(self.ftdi_channel_edit)
+        
+        device_fields_layout.addStretch()
+        manual_layout.addRow(device_fields_layout)
+        
+        usb_layout.addWidget(manual_frame)
+        scroll_layout.addWidget(usb_group)
+        
+        # Programming Modes Group
+        modes_group = QGroupBox("Programming Modes")
+        modes_layout = QVBoxLayout(modes_group)
+        
+        self.sram_checkbox = QCheckBox("Supports SRAM Programming")
+        self.sram_checkbox.setChecked(True)
+        self.sram_checkbox.setToolTip("Enable if the board supports volatile SRAM programming")
+        modes_layout.addWidget(self.sram_checkbox)
+        
+        self.flash_checkbox = QCheckBox("Supports Flash Programming")
+        self.flash_checkbox.setChecked(True)
+        self.flash_checkbox.setToolTip("Enable if the board supports non-volatile Flash programming")
+        modes_layout.addWidget(self.flash_checkbox)
+        
+        scroll_layout.addWidget(modes_group)
+        
+        # Additional Information Group
+        additional_group = QGroupBox("Additional Information")
+        additional_layout = QFormLayout(additional_group)
+        
+        self.fpga_family_edit = QLineEdit()
+        self.fpga_family_edit.setPlaceholderText("e.g., GateMate, Xilinx, Lattice")
+        additional_layout.addRow("FPGA Family:", self.fpga_family_edit)
+        
+        self.interfaces_edit = QLineEdit()
+        self.interfaces_edit.setPlaceholderText("e.g., jtag,spi (comma-separated)")
+        additional_layout.addRow("Supported Interfaces:", self.interfaces_edit)
+        
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setPlaceholderText("Additional notes about the board configuration...")
+        self.notes_edit.setMaximumHeight(60)
+        additional_layout.addRow("Notes:", self.notes_edit)
+        
+        scroll_layout.addWidget(additional_group)
+        
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        
+        self.add_btn = QPushButton("Add Board")
+        self.add_btn.clicked.connect(self.validate_and_accept)
+        self.add_btn.setDefault(True)
+        self.add_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
+        
+        button_layout.addWidget(cancel_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(self.add_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Auto-generate identifier when name changes
+        self.name_edit.textChanged.connect(self.auto_generate_identifier)
+        
+        # Initialize USB device data
+        self.detected_devices = []
+        self.on_detection_method_changed()
+        
+    def load_cable_options(self):
+        """Load available cable types from openFPGALoader."""
+        # Common cable types supported by openFPGALoader
+        cable_options = [
+            ("ft232RL", "FTDI FT232RL (requires pin mapping)"),
+            ("ft231X", "FTDI FT231X (requires pin mapping)"),
+            ("ft2232", "FTDI FT2232"),
+            ("ft4232", "FTDI FT4232"),
+            ("cmsisdap", "CMSIS-DAP compatible"),
+            ("jlink", "Segger J-Link"),
+            ("digilent", "Digilent cables"),
+            ("digilent_hs2", "Digilent HS2"),
+            ("digilent_hs3", "Digilent HS3"),
+            ("olimex", "Olimex cables"),
+            ("dirtyJtag", "DirtyJTAG"),
+            ("usbblaster", "Altera USB Blaster"),
+            ("tigard", "Tigard"),
+            ("ch347", "WCH CH347"),
+            ("custom", "Other/Custom cable")
+        ]
+        
+        for cable_id, description in cable_options:
+            self.cable_combo.addItem(description, cable_id)
+            
+        # Connect signal for cable type changes
+        self.cable_combo.currentTextChanged.connect(self.on_cable_changed)
+    
+    def on_cable_changed(self):
+        """Handle cable type changes to show relevant options."""
+        cable_type = self.cable_combo.currentData()
+        
+        # Show pin mapping hint for specific cable types
+        if cable_type in ['ft232RL', 'ft231X']:
+            self.pins_edit.setPlaceholderText("Required: TDI:TDO:TCK:TMS (e.g., 0:1:2:3)")
+            self.pins_edit.setStyleSheet("border: 2px solid #FF9800;")
+        else:
+            self.pins_edit.setPlaceholderText("Optional: Custom pin mapping")
+            self.pins_edit.setStyleSheet("")
+    
+    def auto_generate_identifier(self):
+        """Auto-generate board identifier from name."""
+        name = self.name_edit.text().strip()
+        if name and not self.identifier_edit.text().strip():
+            # Convert to lowercase, replace spaces and special chars with underscores
+            identifier = name.lower()
+            identifier = ''.join(c if c.isalnum() else '_' for c in identifier)
+            identifier = '_'.join(filter(None, identifier.split('_')))  # Remove multiple underscores
+            self.identifier_edit.setText(f"custom_{identifier}")
+    
+    def on_detection_method_changed(self):
+        """Handle changes to the USB device detection method."""
+        method = self.detection_method_combo.currentText()
+        
+        # Enable/disable fields based on selected method
+        self.vid_edit.setEnabled(method.startswith("VID/PID"))
+        self.pid_edit.setEnabled(method.startswith("VID/PID"))
+        self.serial_edit.setEnabled(method.startswith("Serial Number"))
+        self.cable_index_edit.setEnabled(method.startswith("Cable Index"))
+        self.bus_edit.setEnabled(method.startswith("Bus/Device"))
+        self.device_edit.setEnabled(method.startswith("Bus/Device"))
+        
+        # FTDI channel is always available as it's cable-specific
+        cable_type = self.cable_combo.currentData()
+        self.ftdi_channel_edit.setEnabled(cable_type in ['ft4232', 'ft2232'])
+        
+        # Update field styling to show enabled/disabled state
+        for field in [self.vid_edit, self.pid_edit, self.serial_edit, 
+                     self.cable_index_edit, self.bus_edit, self.device_edit, self.ftdi_channel_edit]:
+            if field.isEnabled():
+                field.setStyleSheet("")
+            else:
+                field.setStyleSheet("background-color: #3a3a3a; color: #888888;")
+    
+    def scan_usb_devices(self):
+        """Scan for USB devices using openFPGALoader."""
+        self.scan_status_label.setText("Scanning for USB devices...")
+        self.scan_devices_btn.setEnabled(False)
+        self.detected_devices_combo.clear()
+        self.detected_devices_combo.addItem("Scanning...")
+        
+        try:
+            # Use a project-less instance of OpenFPGALoaderManager for scanning
+            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+            
+            # Create a temporary manager for scanning (this might fail if no project is loaded)
+            try:
+                temp_manager = OpenFPGALoaderManager()
+                devices = temp_manager.scan_usb_devices()
+            except Exception:
+                # If we can't create a manager (no project), try direct command
+                devices = self._scan_usb_devices_direct()
+            
+            self.detected_devices = devices
+            
+            # Update the dropdown
+            self.detected_devices_combo.clear()
+            
+            if devices:
+                self.detected_devices_combo.addItem("Select a detected device...")
+                
+                for device in devices:
+                    # Create a display string for the device
+                    display_name = self._format_device_display(device)
+                    self.detected_devices_combo.addItem(display_name, device)
+                
+                self.scan_status_label.setText(f"Found {len(devices)} USB device(s)")
+                self.scan_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            else:
+                self.detected_devices_combo.addItem("No devices found")
+                self.scan_status_label.setText("No USB devices found")
+                self.scan_status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+                
+        except Exception as e:
+            self.detected_devices_combo.clear()
+            self.detected_devices_combo.addItem("Scan failed")
+            self.scan_status_label.setText(f"Scan failed: {str(e)}")
+            self.scan_status_label.setStyleSheet("color: #f44336; font-weight: bold;")
+        
+        finally:
+            self.scan_devices_btn.setEnabled(True)
+    
+    def _scan_usb_devices_direct(self):
+        """Direct USB scanning when OpenFPGALoaderManager can't be instantiated."""
+        import subprocess
+        devices = []
+        
+        try:
+            # Try using openFPGALoader directly
+            result = subprocess.run(["openFPGALoader.exe", "--scan-usb"], 
+                                  capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and result.stdout:
+                # Simple parsing - just extract basic info
+                lines = result.stdout.strip().split('\n')
+                for i, line in enumerate(lines):
+                    if 'vid:' in line.lower() and 'pid:' in line.lower():
+                        device = {
+                            'name': f'Device {i+1}',
+                            'type': 'unknown',
+                            'raw': line.strip()
+                        }
+                        
+                        # Extract VID/PID if possible
+                        import re
+                        vid_match = re.search(r'vid:\s*([0-9a-fA-F]+)', line, re.IGNORECASE)
+                        pid_match = re.search(r'pid:\s*([0-9a-fA-F]+)', line, re.IGNORECASE)
+                        
+                        if vid_match and pid_match:
+                            device['vid'] = vid_match.group(1)
+                            device['pid'] = pid_match.group(1)
+                            devices.append(device)
+                            
+        except Exception:
+            pass  # Silent fail - scanning is optional
+        
+        return devices
+    
+    def _format_device_display(self, device):
+        """Format a device for display in the dropdown."""
+        name = device.get('name', 'Unknown Device')
+        
+        parts = [name]
+        
+        if device.get('vid') and device.get('pid'):
+            parts.append(f"VID:{device['vid']} PID:{device['pid']}")
+        
+        if device.get('serial'):
+            parts.append(f"Serial:{device['serial']}")
+        
+        if device.get('bus') and device.get('device'):
+            parts.append(f"Bus:{device['bus']} Dev:{device['device']}")
+        
+        return " - ".join(parts)
+    
+    def on_detected_device_selected(self):
+        """Handle selection of a detected device."""
+        device_data = self.detected_devices_combo.currentData()
+        
+        if device_data:
+            # Auto-fill fields based on detected device
+            if device_data.get('vid'):
+                self.vid_edit.setText(device_data['vid'])
+            if device_data.get('pid'):
+                self.pid_edit.setText(device_data['pid'])
+            if device_data.get('serial'):
+                self.serial_edit.setText(device_data['serial'])
+            if device_data.get('bus'):
+                self.bus_edit.setText(device_data['bus'])
+            if device_data.get('device'):
+                self.device_edit.setText(device_data['device'])
+            
+            # Set appropriate detection method
+            if device_data.get('vid') and device_data.get('pid'):
+                self.detection_method_combo.setCurrentText("VID/PID (Vendor/Product ID)")
+            elif device_data.get('serial'):
+                self.detection_method_combo.setCurrentText("Serial Number (FTDI)")
+            elif device_data.get('bus') and device_data.get('device'):
+                self.detection_method_combo.setCurrentText("Bus/Device Number")
+    
+    def validate_and_accept(self):
+        """Validate form data before accepting."""
+        errors = []
+        
+        # Required fields
+        if not self.name_edit.text().strip():
+            errors.append("Board Name is required")
+        
+        if not self.identifier_edit.text().strip():
+            errors.append("Board Identifier is required")
+        
+        if not self.cable_combo.currentData():
+            errors.append("Cable Type must be selected")
+        
+        # Validate identifier format
+        identifier = self.identifier_edit.text().strip()
+        if identifier and not identifier.replace('_', '').isalnum():
+            errors.append("Board Identifier can only contain letters, numbers, and underscores")
+        
+        # Validate programming modes
+        if not self.sram_checkbox.isChecked() and not self.flash_checkbox.isChecked():
+            errors.append("At least one programming mode (SRAM or Flash) must be selected")
+        
+        # Validate pin mapping for specific cable types
+        cable_type = self.cable_combo.currentData()
+        if cable_type in ['ft232RL', 'ft231X'] and not self.pins_edit.text().strip():
+            errors.append("Pin mapping is required for ft232RL and ft231X cable types")
+        
+        # Validate JTAG frequency if provided
+        freq_text = self.freq_edit.text().strip()
+        if freq_text:
+            try:
+                freq = int(freq_text)
+                if freq <= 0:
+                    errors.append("JTAG Frequency must be a positive number")
+            except ValueError:
+                errors.append("JTAG Frequency must be a valid number")
+        
+        # Validate USB device selection
+        detection_method = self.detection_method_combo.currentText()
+        if not detection_method.startswith("Auto"):
+            if detection_method.startswith("VID/PID"):
+                if not self.vid_edit.text().strip() or not self.pid_edit.text().strip():
+                    errors.append("VID and PID are required for VID/PID detection method")
+                else:
+                    # Validate VID/PID format (hexadecimal)
+                    try:
+                        int(self.vid_edit.text().strip(), 16)
+                        int(self.pid_edit.text().strip(), 16)
+                    except ValueError:
+                        errors.append("VID and PID must be valid hexadecimal values")
+            
+            elif detection_method.startswith("Serial Number"):
+                if not self.serial_edit.text().strip():
+                    errors.append("Serial number is required for serial number detection method")
+            
+            elif detection_method.startswith("Cable Index"):
+                if not self.cable_index_edit.text().strip():
+                    errors.append("Cable index is required for cable index detection method")
+                else:
+                    try:
+                        idx = int(self.cable_index_edit.text().strip())
+                        if idx < 0:
+                            errors.append("Cable index must be non-negative")
+                    except ValueError:
+                        errors.append("Cable index must be a valid number")
+            
+            elif detection_method.startswith("Bus/Device"):
+                if not self.bus_edit.text().strip() or not self.device_edit.text().strip():
+                    errors.append("Bus and device numbers are required for bus/device detection method")
+                else:
+                    try:
+                        bus = int(self.bus_edit.text().strip())
+                        dev = int(self.device_edit.text().strip())
+                        if bus <= 0 or dev <= 0:
+                            errors.append("Bus and device numbers must be positive")
+                    except ValueError:
+                        errors.append("Bus and device numbers must be valid numbers")
+        
+        # Validate FTDI channel if provided
+        if self.ftdi_channel_edit.text().strip():
+            try:
+                channel = int(self.ftdi_channel_edit.text().strip())
+                if channel < 0 or channel > 3:
+                    errors.append("FTDI channel must be between 0 and 3")
+            except ValueError:
+                errors.append("FTDI channel must be a valid number")
+        
+        if errors:
+            QMessageBox.warning(self, "Validation Error", 
+                              "Please fix the following errors:\n\n" + "\n".join(f"• {error}" for error in errors))
+            return
+        
+        self.accept()
+    
+    def get_board_config(self):
+        """Get the board configuration from form data."""
+        # Programming modes
+        programming_modes = []
+        if self.sram_checkbox.isChecked():
+            programming_modes.append('sram')
+        if self.flash_checkbox.isChecked():
+            programming_modes.append('flash')
+        
+        # Supported interfaces
+        interfaces_text = self.interfaces_edit.text().strip()
+        if interfaces_text:
+            interfaces = [iface.strip() for iface in interfaces_text.split(',') if iface.strip()]
+        else:
+            # Default interfaces based on cable type
+            cable_type = self.cable_combo.currentData()
+            if 'spi' in cable_type.lower():
+                interfaces = ['spi']
+            else:
+                interfaces = ['jtag']
+        
+        # USB device selection configuration
+        usb_device_selection = {}
+        detection_method = self.detection_method_combo.currentText()
+        
+        if not detection_method.startswith("Auto"):
+            if self.vid_edit.text().strip() and self.pid_edit.text().strip():
+                usb_device_selection['vid'] = self.vid_edit.text().strip()
+                usb_device_selection['pid'] = self.pid_edit.text().strip()
+            
+            if self.serial_edit.text().strip():
+                usb_device_selection['ftdi_serial'] = self.serial_edit.text().strip()
+            
+            if self.cable_index_edit.text().strip():
+                try:
+                    usb_device_selection['cable_index'] = int(self.cable_index_edit.text().strip())
+                except ValueError:
+                    pass  # Ignore invalid values
+            
+            if self.bus_edit.text().strip() and self.device_edit.text().strip():
+                try:
+                    usb_device_selection['bus'] = int(self.bus_edit.text().strip())
+                    usb_device_selection['device'] = int(self.device_edit.text().strip())
+                except ValueError:
+                    pass  # Ignore invalid values
+            
+            if self.ftdi_channel_edit.text().strip():
+                try:
+                    usb_device_selection['ftdi_channel'] = int(self.ftdi_channel_edit.text().strip())
+                except ValueError:
+                    pass  # Ignore invalid values
+        
+        # Build configuration
+        board_config = {
+            'name': self.name_edit.text().strip(),
+            'identifier': self.identifier_edit.text().strip(),
+            'description': self.description_edit.text().strip() or f"Custom board using {self.cable_combo.currentText()}",
+            'manufacturer': self.manufacturer_edit.text().strip() or "Custom",
+            'fpga_family': self.fpga_family_edit.text().strip() or "Unknown",
+            'cable_type': self.cable_combo.currentData(),
+            'programming_modes': programming_modes,
+            'supported_interfaces': interfaces,
+            'default_interface': interfaces[0] if interfaces else 'jtag',
+            'verified': False,
+            'notes': self.notes_edit.toPlainText().strip() or f"Custom board configuration using {self.cable_combo.currentText()} cable",
+            'custom_board': True  # Mark as custom board
+        }
+        
+        # Add USB device selection if configured
+        if usb_device_selection:
+            board_config['usb_device_selection'] = usb_device_selection
+        
+        # Add optional parameters
+        if self.freq_edit.text().strip():
+            board_config['jtag_frequency'] = int(self.freq_edit.text().strip())
+        
+        if self.pins_edit.text().strip():
+            board_config['pin_mapping'] = self.pins_edit.text().strip()
+        
+        if self.fpga_part_edit.text().strip():
+            board_config['fpga_part'] = self.fpga_part_edit.text().strip()
+        
+        return board_config
 
 
 class ImplementationStrategyDialog(QDialog):

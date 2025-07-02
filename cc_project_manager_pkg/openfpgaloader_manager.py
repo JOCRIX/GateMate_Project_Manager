@@ -56,16 +56,26 @@ class OpenFPGALoaderManager(ToolChainManager):
         "detect": "Detect connected devices and cables"
     }
 
-    def __init__(self, interface: str = "auto", device: str = "gatemate"):
+    def __init__(self, interface: str = "auto", device: str = "gatemate", board_identifier: Optional[str] = None):
         """
-        Initialize the openFPGALoader manager.
+        Initialize OpenFPGALoaderManager with interface, device, and board configuration.
+        
+        This manager handles openFPGALoader operations for programming GateMate FPGAs
+        with various board configurations and programming modes.
         
         Args:
-            interface: Programming interface to use ("jtag", "spi", "auto")
-            device: Target device type ("gatemate", "gatemate_a1", "gatemate_evb")
+            interface: Programming interface - "jtag", "spi", or "auto"
+            device: Target FPGA device type (e.g., "gatemate")  
+            board_identifier: Board identifier for openFPGALoader (e.g., "olimex_gatemateevb")
+        
+        The class supports multiple interfaces and devices:
+        - Interfaces: JTAG (standard debugging), SPI (direct flash), Auto (detection)
+        - Devices: GateMate FPGAs and compatible devices
+        - Boards: Both standard and custom board configurations
         """
+        # Initialize parent class with project loading
         super().__init__()
-
+        
         self.loader_logger = logging.getLogger("OpenFPGALoaderManager")
         self.loader_logger.setLevel(logging.DEBUG)
         self.loader_logger.propagate = False  # Prevent propagation to root logger
@@ -86,7 +96,7 @@ class OpenFPGALoaderManager(ToolChainManager):
 
         # Set interface
         if interface not in self.PROGRAMMING_INTERFACES:
-            self.loader_logger.warning(f"Unknown programming interface \"{interface}\", defaulting to auto")
+            self.loader_logger.warning(f"Unknown interface \"{interface}\", defaulting to auto")
             self.interface = "auto"
         else:
             self.interface = interface
@@ -97,6 +107,9 @@ class OpenFPGALoaderManager(ToolChainManager):
             self.device = "gatemate"
         else:
             self.device = device
+        
+        # Set board identifier
+        self.board_identifier = board_identifier
 
         # Get the bitstream directory path
         self.impl_dir = self.config["project_structure"]["impl"]
@@ -113,6 +126,9 @@ class OpenFPGALoaderManager(ToolChainManager):
             self.tool_access_mode = self.config.get("cologne_chip_gatemate_toolchain_preference", "PATH")
         self.loader_access = self._get_loader_access()
         
+        # Load custom board configuration if using a custom board
+        self.custom_board_config = self._load_custom_board_config()
+        
         # ToolChainManager instantiation report
         self._report_instantiation()
 
@@ -122,6 +138,7 @@ class OpenFPGALoaderManager(ToolChainManager):
         New OpenFPGALoaderManager Instantiation Settings:
         PROGRAMMING_INTERFACE:   {self.interface}
         TARGET_DEVICE:           {self.device}
+        BOARD_IDENTIFIER:        {self.board_identifier or 'None (using device)'}
         BITSTREAM_DIRECTORY:     {self.bitstream_dir}
         TOOL_CHAIN_PREFERENCE:   {self.tool_access_mode}
         TOOL_CHAIN_ACCESS:       {self.loader_access}
@@ -160,6 +177,210 @@ class OpenFPGALoaderManager(ToolChainManager):
 
         self.loader_logger.debug(f"Final loader access command: {loader_access}")
         return loader_access
+
+    def _load_custom_board_config(self) -> Optional[Dict]:
+        """
+        Load custom board configuration if the device is a custom board.
+        
+        Returns:
+            Dict with custom board configuration or None if not a custom board
+        """
+        try:
+            from .boards_manager import BoardsManager
+            boards_manager = BoardsManager()
+            
+            # Get board details for the current device
+            board_details = boards_manager.get_board_details(self.device)
+            if board_details and board_details.get('custom_board', False):
+                self.loader_logger.info(f"Using custom board configuration for {self.device}")
+                return board_details
+            
+            return None
+            
+        except Exception as e:
+            self.loader_logger.debug(f"Could not load custom board config: {e}")
+            return None
+    
+    def _build_base_command(self, operation_type: str = "program", additional_options: Optional[List[str]] = None) -> List[str]:
+        """
+        Build base command for openFPGALoader operations with custom board support.
+        
+        Args:
+            operation_type: Type of operation ("program", "detect", "verify", etc.)
+            additional_options: Additional command-line options
+            
+        Returns:
+            List of command components
+        """
+        cmd = [self.loader_access]
+        
+        # Add additional options early in the command
+        if additional_options:
+            cmd.extend(additional_options)
+        
+        # Handle custom boards differently
+        if self.custom_board_config:
+            # Use cable-based approach for custom boards
+            cable_type = self.custom_board_config.get('cable_type', 'cmsisdap')
+            cmd.extend(["-c", cable_type])
+            
+            # Add USB device selection parameters
+            usb_config = self.custom_board_config.get('usb_device_selection', {})
+            
+            if usb_config.get('vid') and usb_config.get('pid'):
+                cmd.extend(["--vid", usb_config['vid']])
+                cmd.extend(["--pid", usb_config['pid']])
+                self.loader_logger.debug(f"Using USB VID:PID {usb_config['vid']}:{usb_config['pid']}")
+            
+            if usb_config.get('cable_index'):
+                cmd.extend(["--cable-index", str(usb_config['cable_index'])])
+                self.loader_logger.debug(f"Using cable index {usb_config['cable_index']}")
+            
+            if usb_config.get('bus') and usb_config.get('device'):
+                cmd.extend(["--busdev-num", f"{usb_config['bus']}:{usb_config['device']}"])
+                self.loader_logger.debug(f"Using bus:device {usb_config['bus']}:{usb_config['device']}")
+            
+            if usb_config.get('ftdi_serial'):
+                cmd.extend(["--ftdi-serial", usb_config['ftdi_serial']])
+                self.loader_logger.debug(f"Using FTDI serial {usb_config['ftdi_serial']}")
+            
+            if usb_config.get('ftdi_channel'):
+                cmd.extend(["--ftdi-channel", str(usb_config['ftdi_channel'])])
+                self.loader_logger.debug(f"Using FTDI channel {usb_config['ftdi_channel']}")
+            
+            # Add custom parameters
+            if 'pin_mapping' in self.custom_board_config:
+                cmd.extend(["--pins", self.custom_board_config['pin_mapping']])
+            
+            if 'jtag_frequency' in self.custom_board_config:
+                cmd.extend(["--freq", str(self.custom_board_config['jtag_frequency'])])
+            
+            if 'fpga_part' in self.custom_board_config:
+                cmd.extend(["--fpga-part", self.custom_board_config['fpga_part']])
+                
+            self.loader_logger.debug(f"Using custom board cable configuration: {cable_type}")
+        else:
+            # Use standard board-based approach
+            board_to_use = self.board_identifier or self.device
+            cmd.extend(["-b", board_to_use])
+            
+            # Add interface specification if not auto
+            if self.interface != "auto":
+                cmd.extend(["--cable", self.interface])
+        
+        return cmd
+
+    def scan_usb_devices(self) -> List[Dict[str, str]]:
+        """
+        Scan for connected USB devices that can be used with openFPGALoader.
+        
+        Returns:
+            List of dictionaries containing device information
+        """
+        devices = []
+        
+        try:
+            # Run USB scan command
+            scan_cmd = [self.loader_access, "--scan-usb"]
+            self.loader_logger.debug(f"USB scan command: {' '.join(scan_cmd)}")
+            
+            result = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and result.stdout:
+                # Parse the output to extract device information
+                devices = self._parse_usb_scan_output(result.stdout)
+                self.loader_logger.info(f"Found {len(devices)} USB devices")
+            else:
+                self.loader_logger.warning(f"USB scan failed or returned no devices")
+                if result.stderr:
+                    self.loader_logger.debug(f"USB scan stderr: {result.stderr}")
+                    
+        except subprocess.TimeoutExpired:
+            self.loader_logger.error("USB scan timed out")
+        except Exception as e:
+            self.loader_logger.error(f"USB scan failed: {e}")
+        
+        return devices
+    
+    def _parse_usb_scan_output(self, output: str) -> List[Dict[str, str]]:
+        """
+        Parse openFPGALoader --scan-usb output to extract device information.
+        
+        Args:
+            output: Raw output from --scan-usb command
+            
+        Returns:
+            List of device dictionaries with parsed information
+        """
+        devices = []
+        
+        try:
+            lines = output.strip().split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith('#') or line.startswith('USB'):
+                    continue
+                    
+                # Try to parse different formats of USB device listings
+                device_info = {}
+                
+                # Look for VID:PID pattern
+                if 'vid:' in line.lower() and 'pid:' in line.lower():
+                    # Extract VID and PID
+                    import re
+                    vid_match = re.search(r'vid:\s*([0-9a-fA-F]+)', line, re.IGNORECASE)
+                    pid_match = re.search(r'pid:\s*([0-9a-fA-F]+)', line, re.IGNORECASE)
+                    
+                    if vid_match and pid_match:
+                        device_info['vid'] = vid_match.group(1)
+                        device_info['pid'] = pid_match.group(1)
+                
+                # Look for bus:device pattern
+                bus_dev_match = re.search(r'bus:\s*(\d+)\s*dev:\s*(\d+)', line, re.IGNORECASE)
+                if bus_dev_match:
+                    device_info['bus'] = bus_dev_match.group(1)
+                    device_info['device'] = bus_dev_match.group(2)
+                
+                # Look for serial number
+                if 'serial' in line.lower():
+                    serial_match = re.search(r'serial:\s*([^\s]+)', line, re.IGNORECASE)
+                    if serial_match:
+                        device_info['serial'] = serial_match.group(1)
+                
+                # Try to identify the device type/name
+                if 'cmsis' in line.lower():
+                    device_info['type'] = 'cmsisdap'
+                    device_info['name'] = 'CMSIS-DAP'
+                elif 'ftdi' in line.lower() or 'ft232' in line.lower() or 'ft231' in line.lower():
+                    device_info['type'] = 'ftdi'
+                    if 'ft232' in line.lower():
+                        device_info['name'] = 'FTDI FT232'
+                    elif 'ft231' in line.lower():
+                        device_info['name'] = 'FTDI FT231'
+                    else:
+                        device_info['name'] = 'FTDI Device'
+                elif 'jlink' in line.lower():
+                    device_info['type'] = 'jlink'
+                    device_info['name'] = 'Segger J-Link'
+                elif 'digilent' in line.lower():
+                    device_info['type'] = 'digilent'
+                    device_info['name'] = 'Digilent'
+                else:
+                    device_info['type'] = 'unknown'
+                    device_info['name'] = 'Unknown Device'
+                
+                # Add raw line for reference
+                device_info['raw'] = line
+                
+                # Only add if we found at least VID/PID or bus/device
+                if device_info.get('vid') or device_info.get('bus'):
+                    devices.append(device_info)
+                    
+        except Exception as e:
+            self.loader_logger.error(f"Error parsing USB scan output: {e}")
+        
+        return devices
 
     def _add_loader_log(self):
         """Add openFPGALoader log file to project configuration."""
@@ -203,18 +424,8 @@ class OpenFPGALoaderManager(ToolChainManager):
         """
         self.loader_logger.info("Detecting connected FPGA devices and cables...")
         
-        # Build detection command following OpenFPGALoader guide format
-        detect_cmd = [self.loader_access]
-        
-        # Add detection flag
-        detect_cmd.append("--detect")
-        
-        # Add board specification (required for proper operation)
-        detect_cmd.extend(["-b", self.device])
-        
-        # Add interface specification if not auto
-        if self.interface != "auto":
-            detect_cmd.extend(["--cable", self.interface])
+        # Build detection command using the base command builder
+        detect_cmd = self._build_base_command("detect", ["--detect"])
         
         self.loader_logger.debug(f"Detection command: {' '.join(detect_cmd)}")
         
@@ -300,23 +511,12 @@ class OpenFPGALoaderManager(ToolChainManager):
 
         self.loader_logger.info(f"Programming FPGA SRAM with bitstream: {bitstream_file}")
         
-        # Build programming command following OpenFPGALoader guide format
-        program_cmd = [self.loader_access]
-        
-        # Add SRAM programming flag (explicit, though it's default)
-        program_cmd.append("-m")  # or --write-sram
-        
-        # Add any additional options before the bitstream file
+        # Build base command with SRAM programming flag
+        base_options = ["-m"]  # or --write-sram
         if options:
-            program_cmd.extend(options)
+            base_options.extend(options)
         
-        # Add board specification if not already provided in options
-        if not options or not any(opt in ["-b", "--board"] for opt in options):
-            program_cmd.extend(["-b", self.device])
-        
-        # Add interface specification if not auto
-        if self.interface != "auto":
-            program_cmd.extend(["--cable", self.interface])
+        program_cmd = self._build_base_command("program", base_options)
         
         # Add bitstream file (must be last)
         program_cmd.append(bitstream_file)
@@ -394,23 +594,12 @@ class OpenFPGALoaderManager(ToolChainManager):
 
         self.loader_logger.info(f"Programming FPGA flash with bitstream: {bitstream_file}")
         
-        # Build programming command following OpenFPGALoader guide format
-        program_cmd = [self.loader_access]
-        
-        # Add flash programming flag
-        program_cmd.append("-f")  # or --write-flash
-        
-        # Add any additional options before the bitstream file
+        # Build base command with flash programming flag
+        base_options = ["-f"]  # or --write-flash
         if options:
-            program_cmd.extend(options)
+            base_options.extend(options)
         
-        # Add board specification if not already provided in options
-        if not options or not any(opt in ["-b", "--board"] for opt in options):
-            program_cmd.extend(["-b", self.device])
-        
-        # Add interface specification if not auto
-        if self.interface != "auto":
-            program_cmd.extend(["--cable", self.interface])
+        program_cmd = self._build_base_command("program", base_options)
         
         # Add bitstream file (must be last)
         program_cmd.append(bitstream_file)
@@ -484,23 +673,12 @@ class OpenFPGALoaderManager(ToolChainManager):
 
         self.loader_logger.info(f"Verifying FPGA bitstream: {bitstream_file}")
         
-        # Build verification command following OpenFPGALoader guide format
-        verify_cmd = [self.loader_access]
-        
-        # Add verification flag
-        verify_cmd.append("--verify")
-        
-        # Add any additional options before the bitstream file
+        # Build base command with verification flag
+        base_options = ["--verify"]
         if options:
-            verify_cmd.extend(options)
+            base_options.extend(options)
         
-        # Add board specification if not already provided in options
-        if not options or not any(opt in ["-b", "--board"] for opt in options):
-            verify_cmd.extend(["-b", self.device])
-        
-        # Add interface specification if not auto
-        if self.interface != "auto":
-            verify_cmd.extend(["--cable", self.interface])
+        verify_cmd = self._build_base_command("verify", base_options)
         
         # Add bitstream file (must be last)
         verify_cmd.append(bitstream_file)
