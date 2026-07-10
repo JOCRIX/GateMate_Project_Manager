@@ -746,13 +746,17 @@ class HierarchyManager:
         self._log("info", f"Successfully added {file_name} to {file_type} section")
         return dest_file_path if copy_to_project else file_path_to_store
 
-    def detect_manual_files(self):
+    def detect_manual_files(self, quiet: bool = False):
         """Detect and optionally add manually placed files in project directories.
         
+        Args:
+            quiet: When True, reduce scan logging to debug level in the hierarchy log.
+
         Returns:
             dict: Dictionary of detected files organized by category
         """
-        self._log("info", "Detecting manually added files in project directories")
+        log_level = "debug" if quiet else "info"
+        self._log(log_level, "Detecting manually added files in project directories")
         
         detected_files = {
             "src": {},
@@ -786,7 +790,7 @@ class HierarchyManager:
             
             # Scan each directory for VHDL files
             for category, directory in directories_to_check.items():
-                self._log("info", f"Scanning {directory} for {category} files")
+                self._log(log_level, f"Scanning {directory} for {category} files")
                 
                 try:
                     for file_name in os.listdir(directory):
@@ -813,19 +817,107 @@ class HierarchyManager:
                                 else:
                                     detected_files["src"][file_name] = file_path
                                 
-                                self._log("info", f"Detected untracked file: {file_name} in {category}")
+                                self._log(log_level, f"Detected untracked file: {file_name} in {category}")
                                 
                 except Exception as e:
                     self._log("error", f"Error scanning directory {directory}: {e}")
             
             # Log summary
             total_detected = sum(len(files) for files in detected_files.values())
-            self._log("info", f"Detection complete: {total_detected} untracked files found")
+            self._log(log_level, f"Detection complete: {total_detected} untracked files found")
             
         except Exception as e:
             self._log("error", f"Error during manual file detection: {e}")
         
         return detected_files
+
+    def detect_constraint_files(self) -> dict:
+        """Find all constraint (.ccf) files in the project constraints directory.
+
+        Returns:
+            dict: Mapping of filename to full path
+        """
+        constraint_files = {}
+        constraint_dirs = self.config.get("project_structure", {}).get("constraints", [])
+        if not constraint_dirs:
+            return constraint_files
+
+        constraints_dir = constraint_dirs[0] if isinstance(constraint_dirs, list) else constraint_dirs
+        if not os.path.exists(constraints_dir):
+            return constraint_files
+
+        try:
+            for file_name in os.listdir(constraints_dir):
+                if file_name.lower().endswith(".ccf"):
+                    constraint_files[file_name] = os.path.join(constraints_dir, file_name)
+        except Exception as e:
+            self._log("error", f"Error scanning constraints directory {constraints_dir}: {e}")
+
+        return constraint_files
+
+    def scan_project_folders(self, quiet: bool = False) -> dict:
+        """Scan src, testbench, and constraints folders for untracked files.
+
+        Returns:
+            dict with ``hdl`` (detect_manual_files result) and ``constraints`` (all .ccf files)
+        """
+        if quiet:
+            return {
+                "hdl": self.detect_manual_files(quiet=True),
+                "constraints": self.detect_constraint_files(),
+            }
+        return {
+            "hdl": self.detect_manual_files(),
+            "constraints": self.detect_constraint_files(),
+        }
+
+    def remove_missing_hierarchy_files(self, quiet: bool = False) -> dict:
+        """Remove hierarchy entries whose files no longer exist on disk.
+
+        Returns:
+            dict: Summary with per-category counts and a list of removed filenames
+        """
+        log_level = "debug" if quiet else "info"
+        removed_summary = {
+            "src": 0,
+            "testbench": 0,
+            "top": 0,
+            "total": 0,
+            "files": [],
+        }
+
+        hierarchy = self.config.get("hdl_project_hierarchy")
+        if not isinstance(hierarchy, dict):
+            return removed_summary
+
+        changed = False
+        for category in ["src", "testbench", "top"]:
+            category_files = hierarchy.get(category)
+            if not isinstance(category_files, dict):
+                continue
+
+            for file_name, file_path in list(category_files.items()):
+                if os.path.exists(file_path):
+                    continue
+
+                del category_files[file_name]
+                removed_summary[category] += 1
+                removed_summary["total"] += 1
+                removed_summary["files"].append((category, file_name))
+                self._log(
+                    log_level,
+                    f"Removed missing file {file_name} from {category} hierarchy",
+                )
+                changed = True
+
+        if changed:
+            self.update_config()
+            self._log(
+                log_level,
+                f"Removed {removed_summary['total']} missing file(s) from project hierarchy",
+            )
+
+        return removed_summary
 
     def add_detected_files(self, detected_files, categories_to_add=None):
         """Add detected files to the project hierarchy.

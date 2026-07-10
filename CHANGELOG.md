@@ -5,6 +5,19 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-07-10
+
+### Added
+
+- **Automatic project folder sync** — While a project is loaded, the manager scans `src/`, `testbench/`, and `constraints/` every 5 seconds for changes made outside the GUI.
+- **Auto-add detected files** — New VHDL and constraint files dropped into project folders are registered automatically and the relevant tabs refresh.
+- **Auto-remove deleted files** — VHDL entries missing from disk are removed from the project hierarchy; deleted constraint files are detected and the Implementation tab refreshes.
+
+### Changed
+
+- **Detect Manual Files** now performs a full two-way sync (add new files, remove deleted ones) instead of add-only detection.
+- Default auto-scan interval reduced from 30s to 5s (configurable via `~/.cc_project_manager/settings.json`).
+
 ## [0.3.2] - 2026-07-10
 
 ### Added

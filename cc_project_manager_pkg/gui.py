@@ -2574,6 +2574,8 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     upload_progress_update = pyqtSignal(str)
+    DEFAULT_AUTO_SCAN_INTERVAL_SECONDS = 5
+    MIN_AUTO_SCAN_INTERVAL_SECONDS = 5
     
     def __init__(self):
         super().__init__()
@@ -2582,6 +2584,9 @@ class MainWindow(QMainWindow):
         self.setup_logging()
         self.current_project_path = None
         self.worker_thread = None
+        self._known_constraint_files = set()
+        self._auto_scan_in_progress = False
+        self._setup_auto_folder_scan_timer()
         # Initialize constraint file mapping for tracking which constraint file was used for each design
         self.design_constraint_mapping = {}
         # Initialize boards manager and selected board
@@ -2610,7 +2615,230 @@ class MainWindow(QMainWindow):
             self.boards_manager = None
         
         # Load and open the most recently used project
-        self.load_recent_project_on_startup()
+        if self.load_recent_project_on_startup():
+            self._sync_known_constraint_files()
+            self._start_auto_folder_scan()
+            self._schedule_initial_folder_scan()
+        
+    def _load_app_settings(self) -> dict:
+        """Load application settings from the user settings file."""
+        try:
+            import json
+            settings_file = self.get_settings_file_path()
+            if os.path.exists(settings_file):
+                with open(settings_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logging.debug(f"Could not load app settings: {e}")
+        return {}
+
+    def _save_app_settings(self, settings: dict) -> None:
+        """Persist application settings to the user settings file."""
+        try:
+            import json
+            settings_file = self.get_settings_file_path()
+            settings['last_updated'] = time.time()
+            with open(settings_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            logging.warning(f"Failed to save app settings: {e}")
+
+    def _get_auto_scan_interval_seconds(self) -> int:
+        settings = self._load_app_settings()
+        interval = int(settings.get(
+            'auto_scan_interval_seconds',
+            self.DEFAULT_AUTO_SCAN_INTERVAL_SECONDS,
+        ))
+        return max(interval, self.MIN_AUTO_SCAN_INTERVAL_SECONDS)
+
+    def _is_auto_scan_enabled(self) -> bool:
+        return self._load_app_settings().get('auto_scan_enabled', True)
+
+    def _setup_auto_folder_scan_timer(self) -> None:
+        """Create the periodic project folder scan timer."""
+        self.folder_scan_timer = QTimer(self)
+        self.folder_scan_timer.timeout.connect(self._on_auto_folder_scan)
+
+    def _has_active_project(self) -> bool:
+        if self.current_project_path and os.path.exists(self.current_project_path):
+            return True
+        project_config_path, _ = self.find_project_config()
+        return bool(project_config_path)
+
+    def _start_auto_folder_scan(self) -> None:
+        """Start periodic scanning when a project is loaded."""
+        if not self._is_auto_scan_enabled() or not self._has_active_project():
+            self.folder_scan_timer.stop()
+            return
+
+        interval_ms = self._get_auto_scan_interval_seconds() * 1000
+        if not self.folder_scan_timer.isActive():
+            self.folder_scan_timer.start(interval_ms)
+            logging.info(
+                f"Auto folder scan enabled (every {interval_ms // 1000}s) "
+                "for src, testbench, and constraints"
+            )
+        else:
+            self.folder_scan_timer.setInterval(interval_ms)
+
+    def _stop_auto_folder_scan(self) -> None:
+        """Stop periodic folder scanning."""
+        if hasattr(self, 'folder_scan_timer'):
+            self.folder_scan_timer.stop()
+
+    def _schedule_initial_folder_scan(self) -> None:
+        """Run one scan shortly after project load."""
+        QTimer.singleShot(3000, lambda: self._auto_register_new_project_files(quiet=True))
+
+    def _sync_known_constraint_files(self) -> None:
+        """Snapshot current constraint files so only new files trigger UI updates."""
+        project_config_path, project_dir = self.find_project_config()
+        if not project_config_path:
+            self._known_constraint_files = set()
+            return
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(project_dir)
+            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
+            hierarchy = HierarchyManager()
+            self._known_constraint_files = set(hierarchy.detect_constraint_files().keys())
+        except Exception as e:
+            logging.debug(f"Could not sync known constraint files: {e}")
+            self._known_constraint_files = set()
+        finally:
+            os.chdir(original_cwd)
+
+    def _auto_register_new_project_files(
+        self,
+        quiet: bool = False,
+        refresh_ui: bool = True,
+    ) -> dict:
+        """Sync project folders: add new files and remove deleted ones."""
+        result = {
+            "added_hdl": 0,
+            "added_summary": {"src": 0, "testbench": 0, "top": 0, "total": 0},
+            "removed_hdl": 0,
+            "removed_summary": {"src": 0, "testbench": 0, "top": 0, "total": 0, "files": []},
+            "new_constraints": [],
+            "removed_constraints": [],
+        }
+
+        project_config_path, project_dir = self.find_project_config()
+        if not project_config_path:
+            return result
+
+        if self.current_project_path != project_dir:
+            self.current_project_path = project_dir
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(project_dir)
+            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
+            hierarchy = HierarchyManager()
+
+            removed_summary = hierarchy.remove_missing_hierarchy_files(quiet=quiet)
+            result["removed_summary"] = removed_summary
+            result["removed_hdl"] = removed_summary["total"]
+
+            scan_result = hierarchy.scan_project_folders(quiet=quiet)
+            detected_files = scan_result["hdl"]
+            constraint_files = scan_result["constraints"]
+
+            total_detected = sum(len(files) for files in detected_files.values())
+            if total_detected > 0:
+                added_summary = hierarchy.add_detected_files(
+                    detected_files, ["src", "testbench", "top"]
+                )
+                result["added_summary"] = added_summary
+                result["added_hdl"] = added_summary["total"]
+
+            known_constraints = self._known_constraint_files
+            new_constraints = [
+                name for name in constraint_files.keys()
+                if name not in known_constraints
+            ]
+            removed_constraints = [
+                name for name in known_constraints
+                if name not in constraint_files
+            ]
+            self._known_constraint_files = set(constraint_files.keys())
+            result["new_constraints"] = new_constraints
+            result["removed_constraints"] = removed_constraints
+
+            hdl_changed = result["added_hdl"] > 0 or result["removed_hdl"] > 0
+            constraint_changed = bool(new_constraints or removed_constraints)
+
+            if result["removed_hdl"] > 0:
+                removed_names = [
+                    f"{file_name} ({category})"
+                    for category, file_name in removed_summary["files"]
+                ]
+                action = "Auto-removed" if quiet else "Removed"
+                logging.info(
+                    f"{action} {removed_summary['total']} missing VHDL file(s) "
+                    f"from project: {', '.join(removed_names)}"
+                )
+
+            if result["added_hdl"] > 0:
+                summary = result["added_summary"]
+                action = "Auto-added" if quiet else "Added"
+                logging.info(
+                    f"{action} "
+                    f"{summary['total']} VHDL file(s): "
+                    f"{summary['src']} source, "
+                    f"{summary['testbench']} testbench, "
+                    f"{summary['top']} top-level"
+                )
+
+            if new_constraints:
+                action = "Auto-detected" if quiet else "Detected"
+                logging.info(
+                    f"{action} new constraint file(s): "
+                    + ", ".join(new_constraints)
+                )
+
+            if removed_constraints:
+                action = "Auto-removed" if quiet else "Removed"
+                logging.info(
+                    f"{action} missing constraint file(s) from project: "
+                    + ", ".join(removed_constraints)
+                )
+
+            if refresh_ui:
+                if hdl_changed:
+                    self.refresh_project_status()
+                    QTimer.singleShot(300, self.refresh_synthesis_status)
+                if constraint_changed:
+                    self.refresh_implementation_status()
+
+        except Exception as e:
+            if not quiet:
+                logging.error(f"Auto folder scan failed: {e}")
+            else:
+                logging.debug(f"Auto folder scan failed: {e}")
+        finally:
+            os.chdir(original_cwd)
+
+        return result
+
+    def _on_auto_folder_scan(self) -> None:
+        """Periodic callback to detect files added outside the project manager."""
+        if self._auto_scan_in_progress:
+            return
+        if not self._is_auto_scan_enabled() or not self._has_active_project():
+            self._stop_auto_folder_scan()
+            return
+        if self.worker_thread and self.worker_thread.isRunning():
+            return
+        if getattr(self, 'upload_in_progress', False):
+            return
+
+        self._auto_scan_in_progress = True
+        try:
+            self._auto_register_new_project_files(quiet=True)
+        finally:
+            self._auto_scan_in_progress = False
         
     def get_settings_file_path(self):
         """Get the path to the application settings file."""
@@ -2831,7 +3059,7 @@ class MainWindow(QMainWindow):
             ("Load Existing Project", self.load_existing_project, "Load and open an existing project from directory"),
             ("Add VHDL Files", self.add_vhdl_file, "Add VHDL source files to the current project (supports multiple selection)"),
             ("Remove VHDL File", self.remove_vhdl_file, "Remove VHDL file from the project"),
-            ("Detect Manual Files", self.detect_manual_files, "Scan for VHDL files added manually to the project"),
+            ("Detect Manual Files", self.detect_manual_files, "Sync project with src, testbench, and constraints folders (add new files, remove deleted ones)"),
             ("View Project Logs", self.view_project_logs, "View project manager log files and operations history")
         ]
         
@@ -5537,6 +5765,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, '_pending_project_refresh') and self._pending_project_refresh:
                 self._pending_project_refresh = False
                 QTimer.singleShot(500, self.refresh_project_status)
+                self._sync_known_constraint_files()
+                self._start_auto_folder_scan()
+                self._schedule_initial_folder_scan()
                 # Also refresh synthesis status when project files change
                 QTimer.singleShot(700, self.refresh_synthesis_status)
                 QTimer.singleShot(800, self.refresh_implementation_status)
@@ -6494,6 +6725,9 @@ class MainWindow(QMainWindow):
                 
                 # Refresh all tabs to ensure they recognize the new project
                 self.refresh_project_status()
+                self._sync_known_constraint_files()
+                self._start_auto_folder_scan()
+                self._schedule_initial_folder_scan()
                 QTimer.singleShot(300, self.refresh_synthesis_status)
                 QTimer.singleShot(400, self.refresh_implementation_status)
                 QTimer.singleShot(500, self.refresh_simulation_status)
@@ -6508,27 +6742,56 @@ class MainWindow(QMainWindow):
             logging.info("❌ User cancelled project loading")
     
     def detect_manual_files(self):
-        """Detect manually added files."""
+        """Detect manually added or removed files."""
         def detect_files():
-            logging.info("Detecting manually added files...")
-            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
-            hierarchy = HierarchyManager()
-            detected_files = hierarchy.detect_manual_files()
-            
-            # Count total detected files
-            total_detected = sum(len(files) for files in detected_files.values())
-            
-            if total_detected == 0:
-                return "No untracked files found - all VHDL files are already tracked"
-            
-            # Add detected files automatically
-            added_summary = hierarchy.add_detected_files(detected_files, ["src", "testbench", "top"])
-            
-            # Store flag for project status refresh (will be handled by on_operation_finished)
-            self._pending_project_refresh = True
-            logging.info("🔄 Flagged project status for refresh after file detection")
-            
-            return f"Detected and added {added_summary['total']} files: {added_summary['src']} source, {added_summary['testbench']} testbench, {added_summary['top']} top-level"
+            logging.info("Syncing project files with src, testbench, and constraints folders...")
+            result = self._auto_register_new_project_files(quiet=False, refresh_ui=False)
+            added = result["added_hdl"]
+            removed = result["removed_hdl"]
+            new_constraints = result["new_constraints"]
+            removed_constraints = result["removed_constraints"]
+
+            if (
+                added == 0
+                and removed == 0
+                and not new_constraints
+                and not removed_constraints
+            ):
+                return "No project file changes detected"
+
+            messages = []
+            if removed > 0:
+                removed_names = [
+                    f"{file_name} ({category})"
+                    for category, file_name in result["removed_summary"]["files"]
+                ]
+                messages.append(
+                    f"Removed {removed} missing VHDL file(s): "
+                    + ", ".join(removed_names)
+                )
+                self._pending_project_refresh = True
+            if added > 0:
+                summary = result["added_summary"]
+                messages.append(
+                    f"Added {summary['total']} VHDL file(s): "
+                    f"{summary['src']} source, "
+                    f"{summary['testbench']} testbench, "
+                    f"{summary['top']} top-level"
+                )
+                self._pending_project_refresh = True
+            if new_constraints:
+                messages.append(
+                    "Detected new constraint file(s): " + ", ".join(new_constraints)
+                )
+                self._pending_implementation_refresh = True
+            if removed_constraints:
+                messages.append(
+                    "Removed missing constraint file(s): "
+                    + ", ".join(removed_constraints)
+                )
+                self._pending_implementation_refresh = True
+
+            return " | ".join(messages)
         
         self.run_in_thread(detect_files, success_msg="File detection completed")
     
@@ -10116,6 +10379,7 @@ Simulation Options:
             
             self.worker_thread.terminate()
         
+        self._stop_auto_folder_scan()
         event.accept()
     
     # Helper methods for synthesis functionality
