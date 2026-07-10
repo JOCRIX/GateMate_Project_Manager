@@ -5,6 +5,14 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-07-10
+
+### Fixed
+
+- **Synthesis tab missing auto-added entities** — Entity discovery now opens the active project directory before reading the hierarchy, so VHDL files added by folder sync appear under Available Entities without a manual refresh.
+- **Simulation testbench list** — Same project-directory lookup fix applied when loading testbenches.
+- **Project config resolution** — `find_project_config()` prefers `current_project_path` when set, so tabs stay in sync even if the app working directory is elsewhere.
+
 ## [0.3.3] - 2026-07-10
 
 ### Added

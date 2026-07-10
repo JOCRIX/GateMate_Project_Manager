@@ -4500,6 +4500,7 @@ class MainWindow(QMainWindow):
             self.testbench_tree.clear()
             
             # Get available testbenches
+            original_cwd = self._enter_project_directory()
             try:
                 from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
                 hierarchy_manager = HierarchyManager()
@@ -4573,6 +4574,8 @@ class MainWindow(QMainWindow):
                 ])
                 error_item.setForeground(0, QColor("#F44336"))
                 error_item.setForeground(3, QColor("#F44336"))
+            finally:
+                self._leave_project_directory(original_cwd)
             
             # Clear the tree
             self.simulation_tree.clear()
@@ -6662,7 +6665,10 @@ class MainWindow(QMainWindow):
             tuple: (project_config_path, project_dir) or (None, None) if not found
         """
         if search_dir is None:
-            search_dir = os.getcwd()
+            if self.current_project_path and os.path.exists(self.current_project_path):
+                search_dir = self.current_project_path
+            else:
+                search_dir = os.getcwd()
         
         # Check root directory first
         try:
@@ -6695,6 +6701,27 @@ class MainWindow(QMainWindow):
             pass
         
         return None, None
+
+    def _enter_project_directory(self):
+        """Change to the active project directory for hierarchy lookups.
+
+        Returns:
+            str | None: Previous working directory if changed, else None
+        """
+        project_config_path, project_dir = self.find_project_config()
+        if not project_config_path:
+            return None
+
+        original_cwd = os.getcwd()
+        if os.path.normpath(original_cwd) != os.path.normpath(project_dir):
+            os.chdir(project_dir)
+            return original_cwd
+        return None
+
+    def _leave_project_directory(self, original_cwd):
+        """Restore the previous working directory after a project lookup."""
+        if original_cwd is not None:
+            os.chdir(original_cwd)
 
     def load_existing_project(self):
         """Load an existing project from a directory."""
@@ -10615,6 +10642,7 @@ Simulation Options:
 
     def _find_available_vhdl_entities(self):
         """Find available VHDL entities in the project with their type information."""
+        original_cwd = self._enter_project_directory()
         try:
             from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
             hierarchy = HierarchyManager()
@@ -10659,9 +10687,12 @@ Simulation Options:
         except Exception as e:
             logging.warning(f"Could not find VHDL entities: {e}")
             return {}
+        finally:
+            self._leave_project_directory(original_cwd)
     
     def _find_entity_source_file(self, entity_name):
         """Find the source file containing the specified entity."""
+        original_cwd = self._enter_project_directory()
         try:
             from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
             hierarchy = HierarchyManager()
@@ -10692,9 +10723,12 @@ Simulation Options:
         except Exception as e:
             logging.error(f"Error finding entity source file: {e}")
             return None
+        finally:
+            self._leave_project_directory(original_cwd)
     
     def _get_project_vhdl_files(self):
         """Get all VHDL files in the project."""
+        original_cwd = self._enter_project_directory()
         vhdl_files = []
         try:
             from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
@@ -10714,6 +10748,8 @@ Simulation Options:
         except Exception as e:
             logging.error(f"Error getting VHDL files: {e}")
             return []
+        finally:
+            self._leave_project_directory(original_cwd)
     
     def _get_yosys_command_preview(self, yosys_instance, entity_name, use_gatemate, custom_options=None):
         """Get a preview of the Yosys command that will be executed."""
