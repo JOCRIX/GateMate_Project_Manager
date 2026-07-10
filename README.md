@@ -1,6 +1,6 @@
 # GateMate FPGA Project Manager
 
-A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route workflows, specifically designed for Cologne Chip GateMate FPGAs. 
+A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route workflows, specifically designed for Cologne Chip GateMate FPGAs.
 
 **The project is work-in-progress.**
 
@@ -18,7 +18,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ![image](https://github.com/user-attachments/assets/a5212d34-19b4-4ca4-8e08-613a908ae48b)
 
 
-- **🛠️ Implementation** - Place & Route with Cologne Chip tools
+- **🛠️ Implementation** - Place & Route with Cologne Chip tools, including constraint file validation and clearer error reporting
 
 ![image](https://github.com/user-attachments/assets/0c745c4f-4d77-4323-b3bc-b838b603b9cb)
 
@@ -26,33 +26,41 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 ![image](https://github.com/user-attachments/assets/bf4547df-9f65-486d-b3e5-100dec155580)
 
-- **📊 Uploading to FPGA** - Program the FPGA SRAM or onboard flash memory
- - Currently support Olimex GateMate boards, make requests to add more boards until I come up with a better way of handling this.
+- **📊 Uploading to FPGA** - Program FPGA SRAM or onboard flash memory
+  - **Zector Instruments Logic 1.0 GateMate (ZI-0001-0001)** — serial programming via the bundled ZI FPGA Loader (COM port, live progress in Output)
+  - **Olimex GateMate EVB** and other boards — openFPGALoader (JTAG/SPI)
+  - Make requests to add more boards until a more flexible board plug-in system is in place.
 
 ![image](https://github.com/user-attachments/assets/e0ddd854-169a-4420-8319-9c48c042dc69)
 
 ## Package Structure
 
 ```
-cc_project_manager/
+GateMate_Project_Manager/
 ├── cc_project_manager_pkg/            # Core package modules
-│   ├── __init__.py                    # Package initialization
-│   ├── __main__.py                   # Main entry point
-│   ├── gui.py                        # PyQt5 GUI interface
-│   ├── create_structure.py           # Project structure creation
-│   ├── yosys_commands.py             # Yosys synthesis integration
-│   ├── ghdl_commands.py              # GHDL simulation integration
-│   ├── pnr_commands.py               # Place & Route commands
-│   ├── simulation_manager.py         # Simulation management
-│   ├── hierarchy_manager.py          # Project hierarchy management
-│   ├── toolchain_manager.py          # Toolchain detection and management
-│   ├── openfpgaloader_manager.py     # FPGA programming support
-│   └── requirements.txt              # Python dependencies
-├── setup.py                          # Package installation script
-├── MANIFEST.in                       # Package manifest
-├── .gitignore                        # Git ignore rules
-├── GUI_QUICKSTART.md                 # GUI user guide
-└── README.md                         # This file
+│   ├── __init__.py                    # Package initialization and version
+│   ├── __main__.py                    # Main entry point
+│   ├── gui.py                         # PyQt5 GUI interface
+│   ├── cli.py                         # Interactive CLI interface
+│   ├── create_structure.py            # Project structure creation
+│   ├── yosys_commands.py              # Yosys synthesis integration
+│   ├── ghdl_commands.py               # GHDL simulation integration
+│   ├── pnr_commands.py                # Place & Route commands
+│   ├── simulation_manager.py          # Simulation management
+│   ├── hierarchy_manager.py           # Project hierarchy management
+│   ├── toolchain_manager.py           # Toolchain detection and management
+│   ├── boards_manager.py              # FPGA board definitions
+│   ├── openfpgaloader_manager.py      # openFPGALoader programming support
+│   ├── zi_fpga_loader.py              # Zector ZI-0001 serial FPGA loader
+│   ├── zi_fpga_loader_manager.py      # ZI loader manager for the GUI
+│   ├── upload_manager_factory.py      # Routes upload to the correct loader
+│   └── requirements.txt               # Python dependencies
+├── setup.py                           # Package installation script
+├── CHANGELOG.md                       # Version history and release notes
+├── MANIFEST.in                        # Package manifest
+├── .gitignore                         # Git ignore rules
+├── GUI_QUICKSTART.md                  # GUI user guide
+└── README.md                          # This file
 ```
 
 ## Installation
@@ -68,11 +76,11 @@ cc_project_manager/
    cd cc_project_manager_pkg
    pip install -r requirements.txt
    ```
-   This installs PyQt5 for the GUI interface and other required packages.
+   This installs PyQt5 for the GUI, pyserial for Zector board programming, and other required packages.
 
 3. **Install as a package (optional, for global commands):**
    ```bash
-   cd..
+   cd ..
    pip install -e .
    ```
    This creates global commands (see Usage section below).
@@ -83,9 +91,12 @@ cc_project_manager/
    - Yosys (for synthesis)
    - Cologne Chip GateMate tools (for implementation)
 
-5. **Get openFPGALoader for uploading to the FPGA**
-   - Uploading bitstreams to a development board with openFPGALoader may require additional software, like dirtyJTAG, Zadig. See the documentation
-     for the development board you got.
+5. **Get openFPGALoader for uploading to the FPGA (non-Zector boards)**
+   - Uploading bitstreams to a development board with openFPGALoader may require additional software, like dirtyJTAG, Zadig. See the documentation for the development board you are using.
+
+6. **Zector Instruments ZI-0001 boards**
+   - No openFPGALoader required. Configure the COM port in **Upload → FPGA Board Selection**.
+   - Requires a `.bit` file (generated by Place & Route / bitstream generation).
 
 ## Usage
 
@@ -131,10 +142,10 @@ The GUI is organized into tabs for different operations:
 - **Launch Waveform Viewer** - Open GTKWave for results
 
 #### **Upload Tab**
-- **Device Detection** - Automatically detect connected FPGA boards
-- **Bitstream Upload** - Program the FPGA with generated bitstreams
-- **Board Selection** - Choose target board type
-- **Upload Progress** - Monitor programming status
+- **Device Detection** - Detect connected FPGA boards (openFPGALoader) or test serial port (Zector)
+- **Program SRAM** - Program the FPGA with a generated bitstream
+- **Board Selection** - Choose target board; configure COM port for Zector boards
+- **Upload Progress** - Progress bar and live serial output during programming
 
 #### **Configuration Tab**
 - **Check Toolchain** - Verify tool availability
@@ -158,9 +169,11 @@ The bottom panel shows real-time log messages with:
 
 - **Python 3.8+**
 - **PyQt5 5.15+** (for GUI interface)
+- **pyserial 3.5+** (for Zector ZI-0001 serial programming)
 - **GHDL 5.0.1+**
 - **Yosys 0.9+**
 - **Cologne Chip GateMate toolchain**
+- **openFPGALoader** (for JTAG/SPI boards such as Olimex GateMate EVB)
 
 ### Creating a New Project
 
@@ -199,6 +212,10 @@ Test the package installation:
 python test_package.py
 ```
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and release notes.
+
 ## License
 
 Do whatever you want with it.
@@ -209,5 +226,4 @@ JOCRIX
 
 ## Version
 
-0.3.1
-
+0.3.2

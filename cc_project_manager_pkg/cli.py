@@ -17,6 +17,7 @@ from pathlib import Path
 
 # Import from the cc_project_manager_pkg package
 from cc_project_manager_pkg import (
+    __version__,
     YosysCommands,
     GHDLCommands, 
     HierarchyManager,
@@ -113,7 +114,8 @@ class MenuSystem:
         print("╔═══════════════════════════════════════════════════╗")
         print(f"║         {self.Colors.CYAN}{self.Colors.BOLD}GateMate Project Manager by JOCRIX{self.Colors.RESET}        ║")
         print("║                   by JOCRIX                       ║")
-        print("║                     v0.2                          ║")
+        version_line = f"v{__version__}"
+        print(f"║{version_line:^51}║")
         print("╚═══════════════════════════════════════════════════╝")
         print()
     

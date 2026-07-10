@@ -209,6 +209,9 @@ class PnRCommands(ToolChainManager):
         
         # Ensure constraints directory exists
         os.makedirs(self.constraints_dir, exist_ok=True)
+        
+        self.last_pnr_error = None
+        self.last_pnr_return_code = None
             
         # Get individual p_r preference, fallback to global preference for backward compatibility
         tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
@@ -494,21 +497,302 @@ class PnRCommands(ToolChainManager):
             with open(constraint_file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     line = line.strip()
-                    # Skip empty lines and comments
+                    # Skip empty lines and full-line comments
                     if not line or line.startswith('#'):
                         continue
-                    # Check for active pin assignments (Net or Pin_ directives)
-                    if (line.lower().startswith('net ') or 
-                        line.lower().startswith('pin_in ') or 
-                        line.lower().startswith('pin_out ') or 
-                        line.lower().startswith('pin_triout ') or 
-                        line.lower().startswith('pin_inout ')):
+                    # Strip inline comments (text after # is ignored in .ccf files)
+                    if '#' in line:
+                        line = line.split('#', 1)[0].strip()
+                        if not line:
+                            continue
+                    line_lower = line.lower()
+                    # Check for active pin assignments (Net, Pin_ directives, or Loc assignments)
+                    if (line_lower.startswith('net ') or 
+                        line_lower.startswith('pin_in ') or 
+                        line_lower.startswith('pin_out ') or 
+                        line_lower.startswith('pin_triout ') or 
+                        line_lower.startswith('pin_inout ') or
+                        ' loc = ' in line_lower):
                         return True
             return False
             
         except Exception as e:
             self.pnr_logger.debug(f"Error checking constraint file {constraint_file_path}: {e}")
             return False
+
+    def resolve_constraint_file(
+        self,
+        constraint_file: Optional[str] = None,
+        design_name: Optional[str] = None,
+    ) -> Tuple[Optional[str], str, bool]:
+        """
+        Resolve which constraint file to use for P&R operations.
+        
+        When no explicit constraint file is provided, selection priority is:
+        1. Design-specific {design_name}.ccf with active pin assignments
+        2. Default project constraint file with active pin assignments
+        3. First available constraint file with active pin assignments
+        4. Design-specific file if it exists (template only)
+        5. First available constraint file (template only)
+        
+        Args:
+            constraint_file: Explicit path to a constraint file, or None for auto-detection
+            design_name: Design name used to prefer a matching {design_name}.ccf file
+            
+        Returns:
+            tuple: (file_path or None, selection_reason, is_template_only)
+        """
+        if constraint_file:
+            if os.path.exists(constraint_file):
+                is_template = not self.has_active_constraints(constraint_file)
+                return (
+                    constraint_file,
+                    f"specified constraint file ({os.path.basename(constraint_file)})",
+                    is_template,
+                )
+            return None, f"specified constraint file not found ({constraint_file})", False
+
+        default_constraint_file = self.get_default_constraint_file_path()
+        available_constraints = self.list_available_constraint_files()
+
+        design_constraint_file = None
+        if design_name:
+            design_constraint_file = self.get_constraint_file_path(design_name)
+
+        if (
+            design_constraint_file
+            and os.path.exists(design_constraint_file)
+            and self.has_active_constraints(design_constraint_file)
+        ):
+            return (
+                design_constraint_file,
+                f"design-specific constraint file with active pin assignments ({design_name}.ccf)",
+                False,
+            )
+
+        if (
+            os.path.exists(default_constraint_file)
+            and self.has_active_constraints(default_constraint_file)
+        ):
+            return (
+                default_constraint_file,
+                f"default constraint file with active pin assignments ({os.path.basename(default_constraint_file)})",
+                False,
+            )
+
+        for constraint_name in available_constraints:
+            constraint_path = self.get_constraint_file_path(constraint_name)
+            if os.path.exists(constraint_path) and self.has_active_constraints(constraint_path):
+                return (
+                    constraint_path,
+                    f"first available constraint file with active pin assignments ({constraint_name})",
+                    False,
+                )
+
+        if design_constraint_file and os.path.exists(design_constraint_file):
+            return (
+                design_constraint_file,
+                f"design-specific constraint file (template only - {design_name}.ccf)",
+                True,
+            )
+
+        if available_constraints:
+            constraint_path = self.get_constraint_file_path(available_constraints[0])
+            return (
+                constraint_path,
+                f"first available constraint file (template only - {available_constraints[0]})",
+                True,
+            )
+
+        return None, "no constraint files found", False
+
+    def validate_constraint_file_for_pnr(
+        self,
+        constraint_file: Optional[str] = None,
+        design_name: Optional[str] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Validate constraint file selection before running place and route.
+        
+        Args:
+            constraint_file: Selected constraint file name/path, "default", "none", or None
+            design_name: Design name for design-specific constraint file checks
+            
+        Returns:
+            tuple: (is_valid, error_message or None)
+        """
+        try:
+            constraint_file_path = None
+            constraint_source = ""
+
+            if constraint_file and constraint_file not in ("default", "none"):
+                if os.path.isabs(constraint_file):
+                    constraint_file_path = constraint_file
+                else:
+                    constraint_file_path = os.path.join(self.constraints_dir, constraint_file)
+                constraint_source = f"selected constraint file: {os.path.basename(constraint_file_path)}"
+            else:
+                if design_name:
+                    design_constraint_file = self.get_constraint_file_path(design_name)
+                    if os.path.exists(design_constraint_file):
+                        if not self.has_active_constraints(design_constraint_file):
+                            error_msg = (
+                                f"❌ CONSTRAINT FILE IS EMPTY OR ALL COMMENTED OUT\n\n"
+                                f"The design-specific constraint file {design_name}.ccf exists but "
+                                f"contains no active pin assignments:\n"
+                                f"File: {design_constraint_file}\n\n"
+                                f"Place and Route for '{design_name}' requires active pin constraints "
+                                f"in {design_name}.ccf.\n"
+                                f"The file either:\n"
+                                f"• Contains only comments (lines starting with #)\n"
+                                f"• Contains only empty lines\n"
+                                f"• Has no Net, Pin_in, Pin_out, Pin_triout, or Pin_inout assignments\n\n"
+                                f"SOLUTIONS:\n"
+                                f"1. Edit {design_name}.ccf and add pin assignments for this design\n"
+                                f"2. Uncomment existing pin assignments in the file\n"
+                                f"3. Select a different constraint file from the dropdown"
+                            )
+                            return False, error_msg
+
+                constraint_file_path, constraint_source, is_template = self.resolve_constraint_file(
+                    design_name=design_name
+                )
+                if constraint_file_path and is_template:
+                    constraint_source = constraint_source.replace(" (template only", "")
+
+            if not constraint_file_path:
+                return True, None
+
+            if not os.path.exists(constraint_file_path):
+                error_msg = (
+                    f"❌ CONSTRAINT FILE NOT FOUND\n\n"
+                    f"The {constraint_source} was not found:\n"
+                    f"Expected: {constraint_file_path}\n\n"
+                    f"SOLUTIONS:\n"
+                    f"1. Check that the constraint file exists\n"
+                    f"2. Create a constraint file with pin assignments\n"
+                    f"3. Select a different constraint file\n"
+                    f"4. Or select 'none' if no constraints are needed"
+                )
+                return False, error_msg
+
+            if not self.has_active_constraints(constraint_file_path):
+                error_msg = (
+                    f"❌ CONSTRAINT FILE IS EMPTY OR ALL COMMENTED OUT\n\n"
+                    f"The {constraint_source} exists but contains no active pin assignments:\n"
+                    f"File: {constraint_file_path}\n\n"
+                    f"Place and Route typically requires active pin constraints to succeed.\n"
+                    f"The file either:\n"
+                    f"• Contains only comments (lines starting with #)\n"
+                    f"• Contains only empty lines\n"
+                    f"• Has no Net, Pin_in, Pin_out, Pin_triout, or Pin_inout assignments\n\n"
+                    f"SOLUTIONS:\n"
+                    f"1. Edit the constraint file and add pin assignments like:\n"
+                    f"   Pin_in   clk      IOB_13\n"
+                    f"   Pin_out  led      IOB_25\n"
+                    f"2. Uncomment existing pin assignments in the file\n"
+                    f"3. Create a new constraint file with active constraints\n"
+                    f"4. Select a different constraint file with active constraints\n"
+                    f"5. Or proceed anyway (may cause P&R to fail)"
+                )
+                return False, error_msg
+
+            return True, None
+
+        except Exception as e:
+            self.pnr_logger.error(f"Error validating constraint file: {e}")
+            return True, None
+
+    def _format_pnr_tool_error(self, result: subprocess.CompletedProcess) -> str:
+        """Extract a concise, user-facing error summary from P&R tool output."""
+        output_parts = []
+        for text in (result.stdout, result.stderr):
+            if text and text.strip():
+                output_parts.append(text.strip())
+        combined = "\n".join(output_parts)
+        return self._extract_pnr_error_summary(combined, return_code=result.returncode)
+
+    @staticmethod
+    def _extract_pnr_error_summary(output: str, return_code: Optional[int] = None) -> str:
+        """Pull the meaningful lines out of verbose P&R tool output."""
+        if not output or not output.strip():
+            if return_code is not None:
+                return f"P&R tool exited with code {return_code} (no output captured)."
+            return "P&R tool failed (no output captured)."
+
+        noise_markers = (
+            "X_CONVERT", "SAVE_NET", "ASCII netlist generated:", "Conversion finished!",
+            "found components:", "REMOVE_UNUSED", "REMOVE_BUF_INV", "REPLACE_LUTS",
+            "REPLACE_OTHERS", "WRITE_REFCOMP", "MAPPER started", "PLACER started",
+            "FanOut statistics:", "FanIn statistics:", "Library Mode used:",
+            "Lines read", "Number of inserted", "Map Adder", "During map of",
+            "Number of Combined", "pin:", "ccf:", "arcfg:",
+        )
+
+        summary_lines = []
+        for line in output.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if any(marker in stripped for marker in noise_markers):
+                continue
+            if stripped.lower().startswith("read z:") or stripped.lower().startswith("read "):
+                continue
+
+            upper = stripped.upper()
+            if (
+                "FATAL ERROR" in upper
+                or upper.startswith("ERROR")
+                or stripped.startswith("WARNING:")
+                or "WARNING (" in stripped
+                or "does not match" in stripped.lower()
+                or stripped.lower().startswith("program finished with exit code")
+            ):
+                if stripped not in summary_lines:
+                    summary_lines.append(stripped)
+            elif stripped.lower().startswith("pins are placed from"):
+                constraint_path = stripped[len("Pins are placed from"):].strip()
+                if constraint_path.lower().endswith(" file"):
+                    constraint_path = constraint_path[:-5].strip()
+                summary_lines.append(
+                    f"Constraint file: {os.path.basename(constraint_path)}"
+                )
+
+        if summary_lines:
+            if return_code is not None and not any(
+                "exit code" in line.lower() for line in summary_lines
+            ):
+                summary_lines.append(f"Exit code: {return_code}")
+            return "\n".join(summary_lines)
+
+        non_empty = [line.strip() for line in output.splitlines() if line.strip()]
+        fallback = non_empty[-3:] if len(non_empty) >= 3 else non_empty
+        if return_code is not None:
+            fallback.append(f"Exit code: {return_code}")
+        return "\n".join(fallback) if fallback else output.strip()
+
+    def build_user_failure_message(
+        self,
+        design_name: str,
+        operation: str = "Place and route",
+        constraint_file: Optional[str] = None,
+    ) -> str:
+        """Build a concise error message suitable for the GUI output window."""
+        lines = [f"❌ {operation} failed for {design_name}"]
+
+        if self.last_pnr_error:
+            lines.append("")
+            lines.append(self.last_pnr_error)
+        elif constraint_file:
+            lines.append(f"Constraint file: {os.path.basename(constraint_file)}")
+
+        lines.append("")
+        lines.append("See View Implementation Logs for full details.")
+        return "\n".join(lines)
+
+    def get_last_pnr_error(self) -> Optional[str]:
+        """Return the most recent P&R tool error details, if any."""
+        return self.last_pnr_error
 
     def place_and_route(self, design_name: str, netlist_file: Optional[str] = None, 
                        constraint_file: Optional[str] = None, 
@@ -640,43 +924,21 @@ class PnRCommands(ToolChainManager):
                 self.pnr_logger.error(f"ERROR: Please check that the constraint file exists and the path is correct")
                 return False
         else:
-            # Auto-detection: Intelligently select the best constraint file
-            default_constraint_file = self.get_default_constraint_file_path()
-            available_constraints = self.list_available_constraint_files()
-            
-            constraint_file_to_use = None
-            constraint_file_reason = ""
-            
-            # First, check if default constraint file exists and has active constraints
-            if os.path.exists(default_constraint_file) and self.has_active_constraints(default_constraint_file):
-                constraint_file_to_use = default_constraint_file
-                constraint_file_reason = "default constraint file with active pin assignments"
-            elif available_constraints:
-                # Look for the first constraint file with active pin assignments
-                for constraint_name in available_constraints:
-                    constraint_path = self.get_constraint_file_path(constraint_name)
-                    if self.has_active_constraints(constraint_path):
-                        constraint_file_to_use = constraint_path
-                        constraint_file_reason = f"first available constraint file with active pin assignments ({constraint_name})"
-                        break
-                
-                # If no constraint file has active assignments, use the first available as fallback
-                if not constraint_file_to_use and available_constraints:
-                    constraint_file_to_use = self.get_constraint_file_path(available_constraints[0])
-                    constraint_file_reason = f"first available constraint file (template only - {available_constraints[0]})"
-            
+            constraint_file_to_use, constraint_file_reason, is_template = self.resolve_constraint_file(
+                design_name=design_name
+            )
+
             if constraint_file_to_use:
                 pnr_cmd.extend(["-ccf", constraint_file_to_use])
                 constraint_file_used = constraint_file_to_use
                 self.pnr_logger.info(f"Auto-detected constraint file: {constraint_file_to_use}")
                 self.pnr_logger.info(f"Selected {constraint_file_reason}")
-                
-                # Warn if using a template-only file
-                if "template only" in constraint_file_reason:
+
+                if is_template:
                     self.pnr_logger.warning("WARNING: Selected constraint file appears to be a template with no active pin assignments")
                     self.pnr_logger.warning("WARNING: This may cause P&R to fail. Consider adding actual pin constraints.")
             else:
-                # No constraint file available - this is often required for P&R
+                default_constraint_file = self.get_default_constraint_file_path()
                 self.pnr_logger.error("ERROR: CONSTRAINT FILE REQUIRED")
                 self.pnr_logger.error("ERROR: No constraint file was specified and no constraint files were found.")
                 self.pnr_logger.error("ERROR: Place and Route operations typically require constraint files to:")
@@ -715,26 +977,38 @@ class PnRCommands(ToolChainManager):
             if result.stdout:
                 self.pnr_logger.info(f"P&R STDOUT: {result.stdout}")
             if result.stderr:
-                self.pnr_logger.info(f"P&R STDERR: {result.stderr}")
+                if result.returncode == 0:
+                    self.pnr_logger.info(f"P&R STDERR: {result.stderr}")
+                else:
+                    self.pnr_logger.error(f"P&R STDERR: {result.stderr}")
                 
             if result.returncode == 0:
+                self.last_pnr_error = None
+                self.last_pnr_return_code = None
                 self.pnr_logger.info(f"Successfully completed place and route for {design_name}")
                 self.pnr_logger.info(f"Generated implementation file: {output_file}")
                 
                 self._organize_pnr_output_files(design_name)
                 return True
             else:
+                self.last_pnr_return_code = result.returncode
+                self.last_pnr_error = self._format_pnr_tool_error(result)
                 self.pnr_logger.error(f"Place and route failed for {design_name} with return code {result.returncode}")
+                if self.last_pnr_error:
+                    self.pnr_logger.error(f"P&R error summary:\n{self.last_pnr_error}")
                 return False
                 
         except subprocess.TimeoutExpired as e:
+            self.last_pnr_error = f"P&R tool timed out after 300 seconds: {e}"
             self.pnr_logger.error(f"Place and route timed out for {design_name}: {e}")
             return False
         except FileNotFoundError as e:
+            self.last_pnr_error = f"P&R tool not found: {self.pnr_access}"
             self.pnr_logger.error(f"P&R tool not found: {e}")
             self.pnr_logger.error(f"Attempted to run: {self.pnr_access}")
             return False
         except Exception as e:
+            self.last_pnr_error = str(e)
             self.pnr_logger.error(f"Unexpected error during place and route for {design_name}: {e}")
             self.pnr_logger.error(f"Exception type: {type(e).__name__}")
             import traceback

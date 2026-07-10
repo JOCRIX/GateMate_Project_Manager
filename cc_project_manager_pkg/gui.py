@@ -41,16 +41,18 @@ from cc_project_manager_pkg import (
     CreateStructure,
     ToolChainManager,
     PnRCommands,
-    SimulationManager
+    SimulationManager,
+    __version__,
 )
 
 
 class LogHandler(logging.Handler):
     """Custom logging handler to redirect logs to the GUI output window."""
     
-    def __init__(self, text_widget):
+    def __init__(self, text_widget, progress_callback=None):
         super().__init__()
         self.text_widget = text_widget
+        self.progress_callback = progress_callback
         self.setFormatter(logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s'
         ))
@@ -61,6 +63,8 @@ class LogHandler(logging.Handler):
             msg = self.format(record)
             # Use Qt's thread-safe mechanism to update GUI
             self.text_widget.append_log.emit(msg, record.levelname)
+            if self.progress_callback:
+                self.progress_callback(record.getMessage())
         except Exception:
             pass
 
@@ -151,9 +155,8 @@ class WorkerThread(QThread):
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}"
-            logging.error(f"WorkerThread exception: {error_msg}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            self.finished.emit(False, error_msg)
+            logging.debug(f"WorkerThread traceback: {traceback.format_exc()}")
+            self.finished.emit(False, str(e) if str(e) else error_msg)
 
 
 class ProjectDialog(QDialog):
@@ -584,16 +587,18 @@ from cc_project_manager_pkg import (
     CreateStructure,
     ToolChainManager,
     PnRCommands,
-    SimulationManager
+    SimulationManager,
+    __version__,
 )
 
 
 class LogHandler(logging.Handler):
     """Custom logging handler to redirect logs to the GUI output window."""
     
-    def __init__(self, text_widget):
+    def __init__(self, text_widget, progress_callback=None):
         super().__init__()
         self.text_widget = text_widget
+        self.progress_callback = progress_callback
         self.setFormatter(logging.Formatter(
             '%(asctime)s - %(levelname)s - %(message)s'
         ))
@@ -604,6 +609,8 @@ class LogHandler(logging.Handler):
             msg = self.format(record)
             # Use Qt's thread-safe mechanism to update GUI
             self.text_widget.append_log.emit(msg, record.levelname)
+            if self.progress_callback:
+                self.progress_callback(record.getMessage())
         except Exception:
             pass
 
@@ -694,9 +701,8 @@ class WorkerThread(QThread):
         except Exception as e:
             import traceback
             error_msg = f"Error: {str(e)}"
-            logging.error(f"WorkerThread exception: {error_msg}")
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            self.finished.emit(False, error_msg)
+            logging.debug(f"WorkerThread traceback: {traceback.format_exc()}")
+            self.finished.emit(False, str(e) if str(e) else error_msg)
 
 
 class ProjectDialog(QDialog):
@@ -2566,10 +2572,13 @@ class CustomStrategyDialog(QDialog):
 
 class MainWindow(QMainWindow):
     """Main application window."""
+
+    upload_progress_update = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
         self.init_ui()
+        self.upload_progress_update.connect(self._update_upload_progress)
         self.setup_logging()
         self.current_project_path = None
         self.worker_thread = None
@@ -2728,7 +2737,7 @@ class MainWindow(QMainWindow):
         
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("GateMate Project Manager by JOCRIX v0.2 - Dark Mode")
+        self.setWindowTitle(f"GateMate Project Manager by JOCRIX v{__version__} - Dark Mode")
         self.setGeometry(100, 100, 1200, 800)
         
         # Set application icon (if available)
@@ -4096,7 +4105,7 @@ class MainWindow(QMainWindow):
         info_layout.setContentsMargins(10, 5, 10, 5)
         
         # openFPGALoader status
-        self.openfpgaloader_status_label = QLabel("openFPGALoader: Checking...")
+        self.openfpgaloader_status_label = QLabel("Programming Tool: Checking...")
         self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #FFA726;")
         info_layout.addWidget(self.openfpgaloader_status_label)
         
@@ -5471,12 +5480,15 @@ class MainWindow(QMainWindow):
             root_logger.removeHandler(handler)
         
         # Add GUI handler
-        gui_handler = LogHandler(self.log_widget)
+        gui_handler = LogHandler(
+            self.log_widget,
+            progress_callback=self.upload_progress_update.emit,
+        )
         gui_handler.setLevel(logging.INFO)
         root_logger.addHandler(gui_handler)
         
         # Initial message
-        logging.info("GateMate Project Manager by JOCRIX GUI started")
+        logging.info(f"GateMate Project Manager by JOCRIX v{__version__} GUI started")
     
     def show_message(self, title: str, message: str, msg_type: str = "info"):
         """Show a message box."""
@@ -7312,8 +7324,7 @@ class MainWindow(QMainWindow):
             if constraint_file and constraint_file != "default" and constraint_file != "none":
                 self.design_constraint_mapping[design_name] = constraint_file
             else:
-                # Try to determine the default constraint file that will be used
-                # Ensure we're in the correct project directory
+                # Resolve which constraint file auto-detection will use
                 project_config_path, project_dir = self.find_project_config()
                 if project_dir and os.getcwd() != project_dir:
                     logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
@@ -7321,87 +7332,27 @@ class MainWindow(QMainWindow):
                 
                 from cc_project_manager_pkg.pnr_commands import PnRCommands
                 pnr_temp = PnRCommands()
-                default_constraint = pnr_temp.get_default_constraint_file_path()
-                if os.path.exists(default_constraint):
-                    self.design_constraint_mapping[design_name] = os.path.basename(default_constraint)
+                resolved_path, _, _ = pnr_temp.resolve_constraint_file(design_name=design_name)
+                if resolved_path:
+                    self.design_constraint_mapping[design_name] = os.path.basename(resolved_path)
                 else:
                     self.design_constraint_mapping[design_name] = "None"
             
-            def validate_constraint_file_for_pnr(pnr, constraint_file, design_name):
-                """
-                Validate constraint file before running place and route.
-                
-                Args:
-                    pnr: PnRCommands instance
-                    constraint_file: Selected constraint file name or None
-                    design_name: Design name for error messages
-                    
-                Returns:
-                    tuple: (is_valid: bool, error_message: str or None)
-                """
+            def _log_constraint_error_to_impl_log(pnr, error_message):
+                """Write constraint validation errors to the implementation log."""
+                pnr.pnr_logger.error(error_message)
+                for handler in pnr.pnr_logger.handlers:
+                    handler.flush()
                 try:
-                    # Determine which constraint file will be used
-                    constraint_file_path = None
-                    constraint_source = ""
-                    
-                    if constraint_file and constraint_file != "default" and constraint_file != "none":
-                        # Specific constraint file selected
-                        constraint_file_path = os.path.join(pnr.constraints_dir, constraint_file)
-                        constraint_source = f"selected constraint file: {constraint_file}"
-                    else:
-                        # Auto-detection logic (same as in PnRCommands.place_and_route)
-                        default_constraint_file = pnr.get_default_constraint_file_path()
-                        available_constraints = pnr.list_available_constraint_files()
-                        
-                        # Check default constraint file first
-                        if os.path.exists(default_constraint_file):
-                            constraint_file_path = default_constraint_file
-                            constraint_source = "default constraint file"
-                        elif available_constraints:
-                            # Use first available constraint file
-                            constraint_file_path = pnr.get_constraint_file_path(available_constraints[0])
-                            constraint_source = f"first available constraint file: {available_constraints[0]}"
-                    
-                    if not constraint_file_path:
-                        # No constraint file will be used - this is often OK, let P&R handle it
-                        return True, None
-                    
-                    if not os.path.exists(constraint_file_path):
-                        error_msg = f"❌ CONSTRAINT FILE NOT FOUND\n\n"
-                        error_msg += f"The {constraint_source} was not found:\n"
-                        error_msg += f"Expected: {constraint_file_path}\n\n"
-                        error_msg += "SOLUTIONS:\n"
-                        error_msg += "1. Check that the constraint file exists\n"
-                        error_msg += "2. Create a constraint file with pin assignments\n"
-                        error_msg += "3. Select a different constraint file\n"
-                        error_msg += "4. Or select 'none' if no constraints are needed"
-                        return False, error_msg
-                    
-                    # Check if constraint file has active constraints
-                    if not pnr.has_active_constraints(constraint_file_path):
-                        error_msg = f"❌ CONSTRAINT FILE IS EMPTY OR ALL COMMENTED OUT\n\n"
-                        error_msg += f"The {constraint_source} exists but contains no active pin assignments:\n"
-                        error_msg += f"File: {constraint_file_path}\n\n"
-                        error_msg += "Place and Route typically requires active pin constraints to succeed.\n"
-                        error_msg += "The file either:\n"
-                        error_msg += "• Contains only comments (lines starting with #)\n"
-                        error_msg += "• Contains only empty lines\n"
-                        error_msg += "• Has no Net, Pin_in, Pin_out, Pin_triout, or Pin_inout assignments\n\n"
-                        error_msg += "SOLUTIONS:\n"
-                        error_msg += "1. Edit the constraint file and add pin assignments like:\n"
-                        error_msg += "   Pin_in   clk      IOB_13\n"
-                        error_msg += "   Pin_out  led      IOB_25\n"
-                        error_msg += "2. Uncomment existing pin assignments in the file\n"
-                        error_msg += "3. Create a new constraint file with active constraints\n"
-                        error_msg += "4. Select a different constraint file with active constraints\n"
-                        error_msg += "5. Or proceed anyway (may cause P&R to fail)"
-                        return False, error_msg
-                    
-                    return True, None
-                    
-                except Exception as e:
-                    logging.error(f"Error validating constraint file: {e}")
-                    return True, None  # Don't block P&R on validation errors
+                    import datetime
+                    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+                    log_entry = f"{timestamp} - ERROR - {error_message}\n"
+                    impl_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
+                    with open(impl_log_path, 'a', encoding='utf-8') as f:
+                        f.write(log_entry)
+                        f.flush()
+                except Exception as log_write_error:
+                    logging.warning(f"Could not write constraint error to implementation log: {log_write_error}")
 
             def pnr_operation():
                 try:
@@ -7433,30 +7384,11 @@ class MainWindow(QMainWindow):
                         logging.info("🔗 Using default constraint file detection")
                     
                     # VALIDATE CONSTRAINT FILE BEFORE PROCEEDING
-                    # Check if constraint file is effectively empty (no active constraints)
-                    constraint_is_valid, constraint_error = validate_constraint_file_for_pnr(pnr, constraint_file, design_name)
+                    constraint_is_valid, constraint_error = pnr.validate_constraint_file_for_pnr(
+                        constraint_file, design_name
+                    )
                     if not constraint_is_valid:
-                        # Log to both general log and implementation log
-                        logging.error(constraint_error)
-                        
-                        # Ensure error gets to implementation log with timestamp
-                        pnr.pnr_logger.error(constraint_error)
-                        # Force flush the logger to ensure it's written immediately
-                        for handler in pnr.pnr_logger.handlers:
-                            handler.flush()
-                        
-                        # Also write directly to implementation log file as backup
-                        try:
-                            import datetime
-                            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
-                            log_entry = f"{timestamp} - ERROR - {constraint_error}\n"
-                            impl_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
-                            with open(impl_log_path, 'a', encoding='utf-8') as f:
-                                f.write(log_entry)
-                                f.flush()
-                        except Exception as log_write_error:
-                            logging.warning(f"Could not write constraint error to implementation log: {log_write_error}")
-                        
+                        _log_constraint_error_to_impl_log(pnr, constraint_error)
                         raise Exception(constraint_error)
                     
                     if impl_params['generate_bitstream'] and impl_params['run_timing_analysis'] and impl_params['generate_sim_netlist']:
@@ -7507,73 +7439,50 @@ class MainWindow(QMainWindow):
                             logging.info("✅ Place and route completed successfully")
                             return f"Place and route completed successfully for {design_name}"
                         else:
-                            logging.error(f"❌ place_and_route returned False for {design_name}")
+                            resolved_path, _, _ = pnr.resolve_constraint_file(
+                                constraint_file=constraint_file_param,
+                                design_name=design_name,
+                            )
+                            constraint_used = os.path.basename(resolved_path) if resolved_path else "none"
                             
                             # Check if it's a constraint file issue by looking at recent PnR logs
                             try:
                                 pnr_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
                                 if os.path.exists(pnr_log_path):
-                                    # Read the last 50 lines of the PnR log to get the error details
                                     with open(pnr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                                         lines = f.readlines()
                                         recent_lines = lines[-50:] if len(lines) > 50 else lines
                                         recent_log = ''.join(recent_lines)
                                         
-                                        # Check for constraint file error
                                         if "CONSTRAINT FILE REQUIRED" in recent_log:
-                                            constraint_error_msg = "❌ CONSTRAINT FILE REQUIRED\n\n"
-                                            constraint_error_msg += "Place and Route failed because no constraint file was specified.\n\n"
-                                            constraint_error_msg += "SOLUTIONS:\n"
-                                            constraint_error_msg += "1. Go to Implementation tab → Place & Route\n"
-                                            constraint_error_msg += "2. Select a constraint file from the dropdown\n"
-                                            constraint_error_msg += "3. Or create a default constraint file first\n\n"
-                                            constraint_error_msg += "Constraint files define pin assignments and timing constraints\n"
-                                            constraint_error_msg += "which are typically required for FPGA implementation."
-                                            
-                                            logging.error(constraint_error_msg)
-                                            raise Exception(constraint_error_msg)
+                                            raise Exception(
+                                                "❌ CONSTRAINT FILE REQUIRED\n\n"
+                                                "No constraint file was found for Place and Route.\n"
+                                                "Select or create a .ccf file with pin assignments."
+                                            )
                                         elif "Specified constraint file not found" in recent_log:
-                                            file_error_msg = "❌ CONSTRAINT FILE NOT FOUND\n\n"
-                                            file_error_msg += "The specified constraint file could not be found.\n\n"
-                                            file_error_msg += "SOLUTIONS:\n"
-                                            file_error_msg += "1. Check that the constraint file exists\n"
-                                            file_error_msg += "2. Verify the file path is correct\n"
-                                            file_error_msg += "3. Select a different constraint file\n"
-                                            file_error_msg += "4. Create a new constraint file"
-                                            
-                                            logging.error(file_error_msg)
-                                            raise Exception(file_error_msg)
+                                            raise Exception(
+                                                "❌ CONSTRAINT FILE NOT FOUND\n\n"
+                                                "The selected constraint file could not be found."
+                                            )
                                         elif "SYNTHESIS NETLIST REQUIRED" in recent_log:
-                                            netlist_error_msg = "❌ SYNTHESIS NETLIST REQUIRED\n\n"
-                                            netlist_error_msg += "Place and Route failed because no synthesis netlist was found.\n\n"
-                                            netlist_error_msg += "SOLUTIONS:\n"
-                                            netlist_error_msg += "1. Go to Synthesis tab and run Synthesis first\n"
-                                            netlist_error_msg += "2. Check that Synthesis completed successfully\n"
-                                            netlist_error_msg += "3. Verify the design name matches your project\n"
-                                            netlist_error_msg += "4. Check synthesis output files in synth directory\n\n"
-                                            netlist_error_msg += "Place and Route requires a synthesized netlist as input."
-                                            
-                                            logging.error(netlist_error_msg)
-                                            raise Exception(netlist_error_msg)
+                                            raise Exception(
+                                                "❌ SYNTHESIS NETLIST REQUIRED\n\n"
+                                                "Run Synthesis first to generate the netlist."
+                                            )
                             except Exception as log_error:
-                                if "CONSTRAINT FILE" in str(log_error) or "SYNTHESIS NETLIST" in str(log_error):
-                                    raise  # Re-raise constraint file and netlist errors
-                                else:
-                                    logging.warning(f"Could not read PnR logs for detailed error: {log_error}")
+                                if str(log_error).startswith("❌"):
+                                    raise
                             
-                            # Generic error message if we can't determine the specific cause
-                            generic_error_msg = f"❌ Place and route failed for {design_name}\n\n"
-                            generic_error_msg += "Common causes:\n"
-                            generic_error_msg += "• Missing or invalid constraint file\n"
-                            generic_error_msg += "• Synthesis netlist not found\n"
-                            generic_error_msg += "• P&R tool configuration issues\n\n"
-                            generic_error_msg += "Check the Implementation Logs for detailed error information."
+                            user_error = pnr.build_user_failure_message(
+                                design_name,
+                                operation="Place and route",
+                                constraint_file=constraint_used,
+                            )
+                            pnr.pnr_logger.error(user_error)
+                            raise Exception(user_error)
                             
-                            logging.error(generic_error_msg)
-                            raise Exception(generic_error_msg)
-                            
-                except Exception as e:
-                    logging.error(f"❌ Implementation operation failed: {e}")
+                except Exception:
                     raise
             
             self.run_in_thread(pnr_operation, success_msg="Implementation completed successfully")
@@ -7581,8 +7490,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, self.refresh_implementation_status)
             
         except Exception as e:
-            logging.error(f"❌ Error in place and route: {e}")
-            self.show_message("Error", f"Error in place and route: {str(e)}", "error")
+            self.show_message("Error", str(e), "error")
     
     def generate_bitstream(self):
         """Generate bitstream from already placed and routed designs."""
@@ -7816,8 +7724,6 @@ class MainWindow(QMainWindow):
             if constraint_file and constraint_file != "default" and constraint_file != "none":
                 self.design_constraint_mapping[design_name] = constraint_file
             else:
-                # Try to determine the default constraint file that will be used
-                # Ensure we're in the correct project directory
                 project_config_path, project_dir = self.find_project_config()
                 if project_dir and os.getcwd() != project_dir:
                     logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
@@ -7825,9 +7731,9 @@ class MainWindow(QMainWindow):
                 
                 from cc_project_manager_pkg.pnr_commands import PnRCommands
                 pnr_temp = PnRCommands()
-                default_constraint = pnr_temp.get_default_constraint_file_path()
-                if os.path.exists(default_constraint):
-                    self.design_constraint_mapping[design_name] = os.path.basename(default_constraint)
+                resolved_path, _, _ = pnr_temp.resolve_constraint_file(design_name=design_name)
+                if resolved_path:
+                    self.design_constraint_mapping[design_name] = os.path.basename(resolved_path)
                 else:
                     self.design_constraint_mapping[design_name] = "None"
             
@@ -7850,6 +7756,16 @@ class MainWindow(QMainWindow):
                     
                     from cc_project_manager_pkg.pnr_commands import PnRCommands
                     pnr = PnRCommands(strategy=impl_params['strategy'])
+                    
+                    # Validate constraint file before proceeding
+                    constraint_is_valid, constraint_error = pnr.validate_constraint_file_for_pnr(
+                        constraint_file, design_name
+                    )
+                    if not constraint_is_valid:
+                        pnr.pnr_logger.error(constraint_error)
+                        for handler in pnr.pnr_logger.handlers:
+                            handler.flush()
+                        raise Exception(constraint_error)
                     
                     # Determine constraint file to use
                     constraint_file_param = None
@@ -9017,38 +8933,30 @@ Simulation Options:
         try:
             logging.info("🔄 Refreshing upload status...")
             
-            # Check openFPGALoader availability
+            # Check programming tool availability for selected board
             try:
-                from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
-                upload_manager = OpenFPGALoaderManager()
-                
-                # Check if openFPGALoader is available using toolchain manager
-                from cc_project_manager_pkg.toolchain_manager import ToolChainManager
-                tcm = ToolChainManager()
-                if tcm.check_tool_version("openfpgaloader"):
-                    self.openfpgaloader_status_label.setText("openFPGALoader: ✅ Available")
-                    self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-                else:
-                    self.openfpgaloader_status_label.setText("openFPGALoader: ❌ Not available")
-                    self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
-                
-                # Try to detect devices
-                try:
-                    device_detected = upload_manager.detect_devices()
-                    if device_detected:
-                        self.device_status_label.setText("FPGA Device: ✅ Detected")
-                        self.device_status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-                    else:
-                        self.device_status_label.setText("FPGA Device: ⚠️ Not detected")
-                        self.device_status_label.setStyleSheet("font-weight: bold; color: #FFA726;")
-                except Exception as e:
-                    self.device_status_label.setText("FPGA Device: ❌ Detection failed")
-                    self.device_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
-                    logging.warning(f"Device detection failed: {e}")
+                from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
+                self._update_programming_tool_status()
+
+                board_identifier = self.selected_board.get('identifier', 'none')
+                if board_identifier and board_identifier != 'none':
+                    upload_manager = create_upload_manager(board_identifier)
+                    try:
+                        device_detected = upload_manager.detect_devices()
+                        if device_detected:
+                            self.device_status_label.setText("FPGA Device: ✅ Detected")
+                            self.device_status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+                        else:
+                            self.device_status_label.setText("FPGA Device: ⚠️ Not detected")
+                            self.device_status_label.setStyleSheet("font-weight: bold; color: #FFA726;")
+                    except Exception as e:
+                        self.device_status_label.setText("FPGA Device: ❌ Detection failed")
+                        self.device_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
+                        logging.warning(f"Device detection failed: {e}")
                 
             except Exception as e:
-                logging.warning(f"Could not load openFPGALoader manager: {e}")
-                self.openfpgaloader_status_label.setText("openFPGALoader: ❌ Error loading")
+                logging.warning(f"Could not load upload manager: {e}")
+                self.openfpgaloader_status_label.setText("Programming Tool: ❌ Error loading")
                 self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
                 self.device_status_label.setText("FPGA Device: ❌ Cannot check")
                 self.device_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
@@ -9128,26 +9036,12 @@ Simulation Options:
         try:
             logging.info("🔄 Refreshing upload status (skipping device check)...")
             
-            # Check openFPGALoader availability
+            # Check programming tool availability for selected board
             try:
-                from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
-                upload_manager = OpenFPGALoaderManager()
-                
-                # Check if openFPGALoader is available using toolchain manager
-                from cc_project_manager_pkg.toolchain_manager import ToolChainManager
-                tcm = ToolChainManager()
-                if tcm.check_tool_version("openfpgaloader"):
-                    self.openfpgaloader_status_label.setText("openFPGALoader: ✅ Available")
-                    self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-                else:
-                    self.openfpgaloader_status_label.setText("openFPGALoader: ❌ Not available")
-                    self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
-                
-                # Skip device detection - device status already updated by dialog
-                
+                self._update_programming_tool_status()
             except Exception as e:
-                logging.warning(f"Could not load openFPGALoader manager: {e}")
-                self.openfpgaloader_status_label.setText("openFPGALoader: ❌ Error loading")
+                logging.warning(f"Could not load upload manager: {e}")
+                self.openfpgaloader_status_label.setText("Programming Tool: ❌ Error loading")
                 self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
             
             # Clear and populate bitstream tree
@@ -9395,9 +9289,9 @@ Simulation Options:
             import re
             
             # Common progress patterns from openFPGALoader
-            percentage_match = re.search(r'(\d+)%', progress_text)
+            percentage_match = re.search(r'(\d+(?:\.\d+)?)%', progress_text)
             if percentage_match:
-                percentage = int(percentage_match.group(1))
+                percentage = int(float(percentage_match.group(1)))
                 self.upload_progress_bar.setRange(0, 100)
                 self.upload_progress_bar.setValue(percentage)
                 self.upload_activity_label.setText(f"Upload Status: 📤 Programming {percentage}%")
@@ -9560,6 +9454,7 @@ Simulation Options:
                 
                 # Update programming button states based on new board capabilities
                 self.update_programming_button_states()
+                self._update_programming_tool_status()
                 
                 logging.info(f"✅ Board selection updated: {self.selected_board['name']} ({self.selected_board['identifier']})")
                 
@@ -9593,6 +9488,59 @@ Simulation Options:
             logging.error(f"Error opening add custom board dialog: {e}")
             QMessageBox.critical(self, "Error", f"Failed to open add custom board dialog:\n\n{str(e)}")
     
+    def _update_programming_tool_status(self):
+        """Update the upload tab programming tool status label for the selected board."""
+        try:
+            from cc_project_manager_pkg.upload_manager_factory import (
+                create_upload_manager,
+                get_board_programming_tool,
+            )
+
+            board_identifier = self.selected_board.get('identifier', 'none')
+            if not hasattr(self, 'openfpgaloader_status_label'):
+                return
+
+            if board_identifier and board_identifier != 'none':
+                tool = get_board_programming_tool(board_identifier)
+                if tool == 'zi_fpga_loader':
+                    upload_manager = create_upload_manager(board_identifier)
+                    if upload_manager.is_available():
+                        com_port = upload_manager.get_com_port()
+                        self.openfpgaloader_status_label.setText(
+                            f"ZI FPGA Loader: ✅ Ready ({com_port})"
+                        )
+                        self.openfpgaloader_status_label.setStyleSheet(
+                            "font-weight: bold; color: #4CAF50;"
+                        )
+                    else:
+                        self.openfpgaloader_status_label.setText(
+                            "ZI FPGA Loader: ❌ pyserial not installed"
+                        )
+                        self.openfpgaloader_status_label.setStyleSheet(
+                            "font-weight: bold; color: #F44336;"
+                        )
+                    if hasattr(self, 'selected_board_status_label'):
+                        self.selected_board_status_label.setText(
+                            f"Target Board: {self.selected_board['name']} (ZI FPGA Loader)"
+                        )
+                    return
+
+            from cc_project_manager_pkg.toolchain_manager import ToolChainManager
+            tcm = ToolChainManager()
+            if tcm.check_tool_version("openfpgaloader"):
+                self.openfpgaloader_status_label.setText("openFPGALoader: ✅ Available")
+                self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+            else:
+                self.openfpgaloader_status_label.setText("openFPGALoader: ❌ Not available")
+                self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #F44336;")
+
+            if hasattr(self, 'selected_board_status_label') and hasattr(self, 'selected_board'):
+                self.selected_board_status_label.setText(
+                    f"Target Board: {self.selected_board.get('name', 'Unknown')}"
+                )
+        except Exception as e:
+            logging.warning(f"Could not update programming tool status: {e}")
+
     def update_programming_button_states(self):
         """Update Program SRAM/Flash button states based on selected board capabilities."""
         try:
@@ -9664,27 +9612,28 @@ Simulation Options:
         
         def sram_program_operation():
             logging.info("Starting SRAM programming...")
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+            from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
             
-            # Use selected board for programming
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
+            upload_manager = create_upload_manager(board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Programming {design_name} to SRAM on {board_name}: {bitstream_path}")
             
-            # Program SRAM with verbose output for progress tracking
             result = upload_manager.program_sram(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully programmed {design_name} to {board_name} SRAM")
                 return f"Successfully programmed {design_name} to {board_name} SRAM"
-            else:
-                logging.error(f"❌ Failed to program {design_name} to {board_name} SRAM")
-                raise Exception(f"Failed to program {design_name} to {board_name} SRAM")
+            error_detail = getattr(upload_manager, 'last_error', None)
+            error_msg = f"Failed to program {design_name} to {board_name} SRAM"
+            if error_detail:
+                error_msg += f"\n{error_detail}"
+            logging.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
         
         self.run_in_thread(sram_program_operation, success_msg="SRAM programming completed")
     
@@ -9700,27 +9649,28 @@ Simulation Options:
         
         def flash_program_operation():
             logging.info("Starting Flash programming...")
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+            from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
             
-            # Use selected board for programming
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
+            upload_manager = create_upload_manager(board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Programming {design_name} to Flash on {board_name}: {bitstream_path}")
             
-            # Program Flash with verbose output for progress tracking
             result = upload_manager.program_flash(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully programmed {design_name} to {board_name} Flash")
                 return f"Successfully programmed {design_name} to {board_name} Flash"
-            else:
-                logging.error(f"❌ Failed to program {design_name} to {board_name} Flash")
-                raise Exception(f"Failed to program {design_name} to {board_name} Flash")
+            error_detail = getattr(upload_manager, 'last_error', None)
+            error_msg = f"Failed to program {design_name} to {board_name} Flash"
+            if error_detail:
+                error_msg += f"\n{error_detail}"
+            logging.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
         
         self.run_in_thread(flash_program_operation, success_msg="Flash programming completed")
     
@@ -9728,25 +9678,26 @@ Simulation Options:
         """Detect connected FPGA devices and cables."""
         def detect_operation():
             logging.info("Detecting FPGA devices...")
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+            from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
             
-            # Use selected board for device detection
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
+            upload_manager = create_upload_manager(board_identifier)
             
             logging.info(f"Detecting devices for {board_name}...")
             
-            # Detect devices (returns bool)
             device_detected = upload_manager.detect_devices()
             
             if device_detected:
                 result = f"{board_name} device detected successfully. Check logs for details."
                 logging.info(f"✅ {result}")
                 return result
-            else:
-                logging.warning(f"⚠️ No {board_name} devices detected")
-                return f"No {board_name} devices detected. Check connections and drivers."
+            error_detail = getattr(upload_manager, 'last_error', None)
+            msg = f"No {board_name} devices detected. Check connections and drivers."
+            if error_detail:
+                msg += f"\n{error_detail}"
+            logging.warning(f"⚠️ {msg}")
+            return msg
         
         self.run_in_thread(detect_operation, success_msg="Device detection completed")
     
@@ -9762,27 +9713,28 @@ Simulation Options:
         
         def verify_operation():
             logging.info("Starting bitstream verification...")
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+            from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
             
-            # Use selected board for verification
             board_identifier = self.selected_board['identifier']
             board_name = self.selected_board['name']
-            upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
+            upload_manager = create_upload_manager(board_identifier)
             
             bitstream_path = self.selected_bitstream["path"]
             design_name = self.selected_bitstream["design"]
             
             logging.info(f"Verifying {design_name} on {board_name}: {bitstream_path}")
             
-            # Verify bitstream with verbose output for progress tracking
             result = upload_manager.verify_bitstream(bitstream_path, options=["--verbose"])
             
             if result:
                 logging.info(f"✅ Successfully verified {design_name} on {board_name}")
                 return f"Successfully verified {design_name} bitstream on {board_name}"
-            else:
-                logging.error(f"❌ Failed to verify {design_name} on {board_name}")
-                raise Exception(f"Failed to verify {design_name} bitstream on {board_name}")
+            error_detail = getattr(upload_manager, 'last_error', None)
+            error_msg = f"Failed to verify {design_name} bitstream on {board_name}"
+            if error_detail:
+                error_msg += f"\n{error_detail}"
+            logging.error(f"❌ {error_msg}")
+            raise Exception(error_msg)
         
         self.run_in_thread(verify_operation, success_msg="Bitstream verification completed")
     
@@ -10144,7 +10096,7 @@ Simulation Options:
         QMessageBox.about(
             self, 
             "About", 
-            "GateMate Project Manager by JOCRIX v0.2\n\n"
+            f"GateMate Project Manager by JOCRIX v{__version__}\n\n"
             "A modern GUI for managing GateMate FPGA projects\n"
             "using Yosys, GHDL, and other open-source tools.\n\n"
             "Created by JOCRIX"
@@ -12117,6 +12069,17 @@ class FPGABoardSelectionDialog(QDialog):
         self.board_info_label = QLabel(f"Selected: {self.current_board['name']}")
         self.board_info_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin: 5px 0px;")
         board_layout.addWidget(self.board_info_label)
+
+        self.programming_tool_label = QLabel("Programming Tool: openFPGALoader")
+        self.programming_tool_label.setStyleSheet("color: #64b5f6; margin: 2px 0px;")
+        board_layout.addWidget(self.programming_tool_label)
+
+        self.loader_config_widget = QWidget()
+        loader_config_layout = QFormLayout(self.loader_config_widget)
+        self.com_port_edit = QLineEdit()
+        self.com_port_edit.setPlaceholderText("e.g., COM6")
+        loader_config_layout.addRow("COM Port:", self.com_port_edit)
+        board_layout.addWidget(self.loader_config_widget)
         
         left_layout.addWidget(board_group)
         
@@ -12217,7 +12180,95 @@ class FPGABoardSelectionDialog(QDialog):
         main_layout.addLayout(button_layout)
         
         # Initialize board details display
+        self._update_loader_config_ui()
         self._update_board_details()
+    
+    def _get_current_board_details(self):
+        if not self.boards_manager or not self.selected_board:
+            return None
+        board_identifier = self.selected_board.get('identifier', '')
+        if not board_identifier or board_identifier == 'none':
+            return None
+        return self.boards_manager.get_board_details(board_identifier)
+
+    def _uses_zi_fpga_loader(self, board_identifier=None):
+        if board_identifier is None:
+            board_identifier = self.selected_board.get('identifier', '')
+        if not self.boards_manager or not board_identifier:
+            return False
+        board = self.boards_manager.get_board_details(board_identifier)
+        return bool(board and board.get('programming_tool') == 'zi_fpga_loader')
+
+    def _update_loader_config_ui(self):
+        board_details = self._get_current_board_details()
+        if board_details and board_details.get('programming_tool') == 'zi_fpga_loader':
+            self.programming_tool_label.setText("Programming Tool: ZI FPGA Loader (serial)")
+            self.programming_tool_label.setStyleSheet("color: #4CAF50; font-weight: bold; margin: 2px 0px;")
+            self.loader_config_widget.setVisible(True)
+            self.com_port_edit.setText(board_details.get('com_port', 'COM6'))
+            self.scan_usb_btn.setEnabled(False)
+            self.scan_usb_btn.setToolTip("USB scan is not used for ZI FPGA Loader boards")
+        else:
+            self.programming_tool_label.setText("Programming Tool: openFPGALoader")
+            self.programming_tool_label.setStyleSheet("color: #64b5f6; margin: 2px 0px;")
+            self.loader_config_widget.setVisible(False)
+            self.scan_usb_btn.setEnabled(True)
+            self.scan_usb_btn.setToolTip("Scan for USB devices and programming interfaces")
+
+    def _save_board_settings(self):
+        if not self.boards_manager or not self._uses_zi_fpga_loader():
+            return
+        board_identifier = self.selected_board.get('identifier', '')
+        board_details = self.boards_manager.get_board_details(board_identifier)
+        if not board_details:
+            return
+        com_port = self.com_port_edit.text().strip()
+        if com_port and com_port != board_details.get('com_port'):
+            board_details['com_port'] = com_port
+            self.boards_manager.update_board(board_identifier, board_details)
+    
+    def _run_connection_test(self):
+        """Run a connection test for the selected board. Returns (success, output_text)."""
+        board_name = self.selected_board['name']
+        board_identifier = self.selected_board['identifier']
+
+        if self._uses_zi_fpga_loader(board_identifier):
+            self._save_board_settings()
+            from cc_project_manager_pkg.upload_manager_factory import create_upload_manager
+            upload_manager = create_upload_manager(board_identifier)
+
+            com_port = self.com_port_edit.text().strip() or upload_manager.get_com_port()
+            self.results_text.append(f"Testing ZI FPGA Loader serial connection on {com_port}\n")
+
+            if upload_manager.detect_devices():
+                output_text = (
+                    f"✅ Serial port {com_port} opened successfully.\n"
+                    f"Programming tool: ZI FPGA Loader\n"
+                )
+                available_ports = upload_manager.list_serial_ports()
+                if available_ports:
+                    output_text += "\nAvailable COM ports:\n"
+                    for port in available_ports:
+                        output_text += f"  • {port}\n"
+                return True, output_text
+
+            error = upload_manager.last_error or f"Could not open {com_port}"
+            return False, f"❌ Serial connection failed: {error}\n"
+
+        from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
+        import subprocess
+
+        upload_manager = OpenFPGALoaderManager(board_identifier=board_identifier)
+        detect_cmd = [upload_manager.loader_access, "--detect", "-b", board_identifier]
+        self.results_text.append(f"Running: {' '.join(detect_cmd)}\n")
+
+        result = subprocess.run(detect_cmd, check=True, capture_output=True, text=True, timeout=30)
+        output_text = "✅ Board connection successful!\n\n"
+        if result.stdout:
+            output_text += f"Output:\n{result.stdout}\n"
+        if result.stderr:
+            output_text += f"Stderr:\n{result.stderr}\n"
+        return True, output_text
     
     def _populate_board_combo(self):
         """Populate the board combo box with available boards from BoardsManager."""
@@ -12270,7 +12321,7 @@ class FPGABoardSelectionDialog(QDialog):
         self.connection_status_label.setStyleSheet("font-weight: bold; color: #888888; margin: 5px 0px;")
         self.results_text.clear()
         
-        # Update board details display
+        self._update_loader_config_ui()
         self._update_board_details()
     
     def _update_board_details(self):
@@ -12302,12 +12353,21 @@ class FPGABoardSelectionDialog(QDialog):
             details_text.append(f"Description: {board_details.get('description', 'N/A')}")
             details_text.append(f"FPGA Family: {board_details.get('fpga_family', 'N/A')}")
             details_text.append("")
-            
-            # openFPGALoader configuration
-            details_text.append("═══ OPENFPGALOADER CONFIG ═══\n")
-            details_text.append(f"Board Identifier: {board_details.get('openFPGALoader_identifier', 'N/A')}")
-            details_text.append(f"Default Interface: {board_details.get('default_interface', 'N/A')}")
-            details_text.append("")
+
+            programming_tool = board_details.get('programming_tool', 'openfpgaloader')
+            if programming_tool == 'zi_fpga_loader':
+                details_text.append("═══ ZI FPGA LOADER CONFIG ═══\n")
+                details_text.append(f"Programming Tool: ZI FPGA Loader v1.0")
+                details_text.append(f"Model: {board_details.get('model', 'N/A')}")
+                details_text.append(f"COM Port: {board_details.get('com_port', 'COM6')}")
+                details_text.append(f"Chunk Size: {board_details.get('chunk_size', 64)} bytes")
+                details_text.append("")
+            else:
+                # openFPGALoader configuration
+                details_text.append("═══ OPENFPGALOADER CONFIG ═══\n")
+                details_text.append(f"Board Identifier: {board_details.get('openFPGALoader_identifier', 'N/A')}")
+                details_text.append(f"Default Interface: {board_details.get('default_interface', 'N/A')}")
+                details_text.append("")
             
             # Supported interfaces
             if 'supported_interfaces' in board_details:
@@ -12370,63 +12430,43 @@ class FPGABoardSelectionDialog(QDialog):
 
     def test_board_connection(self):
         """Test connection to the selected board."""
+        import subprocess
+        import logging
+
         try:
             board_name = self.selected_board['name']
-            board_identifier = self.selected_board['identifier']
             
             self.connection_status_label.setText("Connection: Testing...")
             self.connection_status_label.setStyleSheet("font-weight: bold; color: #FFA726; margin: 5px 0px;")
             self.test_connection_btn.setEnabled(False)
             self.results_text.clear()
             
-            # Import here to avoid circular imports
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
-            upload_manager = OpenFPGALoaderManager()
-            
-            # Build the detect command
-            detect_cmd = [upload_manager.loader_access, "--detect", "-b", board_identifier]
-            
-            import subprocess
-            import logging
-            
-            logging.info(f"🔍 Testing board connection: {' '.join(detect_cmd)}")
-            self.results_text.append(f"Running: {' '.join(detect_cmd)}\n")
-            
-            try:
-                result = subprocess.run(detect_cmd, check=True, capture_output=True, text=True, timeout=30)
-                
-                # Success
+            logging.info(f"🔍 Testing board connection for {board_name}")
+            success, output_text = self._run_connection_test()
+            self.results_text.append(output_text)
+
+            if success:
                 self.connection_status_label.setText("Connection: ✅ Connected")
                 self.connection_status_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin: 5px 0px;")
-                
-                output_text = "✅ Board connection successful!\n\n"
-                if result.stdout:
-                    output_text += f"Output:\n{result.stdout}\n"
-                if result.stderr:
-                    output_text += f"Stderr:\n{result.stderr}\n"
-                
-                self.results_text.append(output_text)
                 logging.info(f"✅ Board connection test successful for {board_name}")
-                
-            except subprocess.TimeoutExpired:
-                self.connection_status_label.setText("Connection: ❌ Timeout")
-                self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
-                self.results_text.append("❌ Connection test timed out (30 seconds)")
-                logging.error(f"❌ Board connection test timed out for {board_name}")
-                
-            except subprocess.CalledProcessError as e:
+            else:
                 self.connection_status_label.setText("Connection: ❌ Failed")
                 self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+                logging.error(f"❌ Board connection test failed for {board_name}")
                 
-                error_text = f"❌ Connection test failed (exit code {e.returncode})\n\n"
-                if e.stdout:
-                    error_text += f"Output:\n{e.stdout}\n"
-                if e.stderr:
-                    error_text += f"Error:\n{e.stderr}\n"
-                
-                self.results_text.append(error_text)
-                logging.error(f"❌ Board connection test failed for {board_name}: {e}")
-                
+        except subprocess.TimeoutExpired:
+            self.connection_status_label.setText("Connection: ❌ Timeout")
+            self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+            self.results_text.append("❌ Connection test timed out (30 seconds)")
+        except subprocess.CalledProcessError as e:
+            self.connection_status_label.setText("Connection: ❌ Failed")
+            self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+            error_text = f"❌ Connection test failed (exit code {e.returncode})\n\n"
+            if e.stdout:
+                error_text += f"Output:\n{e.stdout}\n"
+            if e.stderr:
+                error_text += f"Error:\n{e.stderr}\n"
+            self.results_text.append(error_text)
         except Exception as e:
             self.connection_status_label.setText("Connection: ❌ Error")
             self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
@@ -12494,114 +12534,95 @@ class FPGABoardSelectionDialog(QDialog):
     
     def apply_selection(self):
         """Apply the board selection and test connection automatically."""
+        import subprocess
+        import logging
+
         try:
-            # First test the connection
             self.results_text.clear()
             self.results_text.append("🔄 Testing connection before applying selection...\n")
             
             board_name = self.selected_board['name']
-            board_identifier = self.selected_board['identifier']
             
             self.connection_status_label.setText("Connection: Testing...")
             self.connection_status_label.setStyleSheet("font-weight: bold; color: #FFA726; margin: 5px 0px;")
             
-            # Import here to avoid circular imports
-            from cc_project_manager_pkg.openfpgaloader_manager import OpenFPGALoaderManager
-            upload_manager = OpenFPGALoaderManager()
-            
-            # Build the detect command
-            detect_cmd = [upload_manager.loader_access, "--detect", "-b", board_identifier]
-            
-            import subprocess
-            import logging
-            
-            logging.info(f"🔍 Auto-testing board connection during apply: {' '.join(detect_cmd)}")
-            self.results_text.append(f"Running: {' '.join(detect_cmd)}\n")
-            
-            try:
-                result = subprocess.run(detect_cmd, check=True, capture_output=True, text=True, timeout=30)
-                
-                # Success - board detected
+            logging.info(f"🔍 Auto-testing board connection during apply for {board_name}")
+            success, output_text = self._run_connection_test()
+            self.results_text.append(output_text)
+
+            if success:
                 self.connection_status_label.setText("Connection: ✅ Connected")
                 self.connection_status_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin: 5px 0px;")
-                
-                output_text = "✅ Board connection successful!\n\n"
-                if result.stdout:
-                    output_text += f"Output:\n{result.stdout}\n"
-                if result.stderr:
-                    output_text += f"Stderr:\n{result.stderr}\n"
-                
-                self.results_text.append(output_text)
                 self.results_text.append("✅ Board selection applied successfully!")
-                
-                logging.info(f"✅ Board connection test successful during apply for {board_name}")
-                
-                # Store the connection success for the parent window
+                self._save_board_settings()
                 self.connection_successful = True
-                
-                # Accept the dialog
                 self.accept()
-                
-            except subprocess.TimeoutExpired:
-                self.connection_status_label.setText("Connection: ❌ Timeout")
-                self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
-                self.results_text.append("❌ Connection test timed out (30 seconds)")
-                logging.error(f"❌ Board connection test timed out during apply for {board_name}")
-                
-                # Ask user if they want to proceed anyway
-                reply = QMessageBox.question(self, "Connection Failed", 
-                                           f"Connection test failed for {board_name}.\n\n"
-                                           f"Do you want to apply the selection anyway?",
-                                           QMessageBox.Yes | QMessageBox.No,
-                                           QMessageBox.No)
-                
-                if reply == QMessageBox.Yes:
-                    self.connection_successful = False
-                    self.accept()
-                
-            except subprocess.CalledProcessError as e:
-                self.connection_status_label.setText("Connection: ❌ Failed")
-                self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
-                
-                error_text = f"❌ Connection test failed (exit code {e.returncode})\n\n"
-                if e.stdout:
-                    error_text += f"Output:\n{e.stdout}\n"
-                if e.stderr:
-                    error_text += f"Error:\n{e.stderr}\n"
-                
-                self.results_text.append(error_text)
-                logging.error(f"❌ Board connection test failed during apply for {board_name}: {e}")
-                
-                # Ask user if they want to proceed anyway
-                reply = QMessageBox.question(self, "Connection Failed", 
-                                           f"Connection test failed for {board_name}.\n\n"
-                                           f"Do you want to apply the selection anyway?",
-                                           QMessageBox.Yes | QMessageBox.No,
-                                           QMessageBox.No)
-                
-                if reply == QMessageBox.Yes:
-                    self.connection_successful = False
-                    self.accept()
-                
+                return
+
+            self.connection_status_label.setText("Connection: ❌ Failed")
+            self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+            reply = QMessageBox.question(
+                self, "Connection Failed",
+                f"Connection test failed for {board_name}.\n\nDo you want to apply the selection anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._save_board_settings()
+                self.connection_successful = False
+                self.accept()
+
+        except subprocess.TimeoutExpired:
+            self.connection_status_label.setText("Connection: ❌ Timeout")
+            self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+            self.results_text.append("❌ Connection test timed out (30 seconds)")
+            reply = QMessageBox.question(
+                self, "Connection Failed",
+                f"Connection test timed out for {self.selected_board['name']}.\n\nApply anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._save_board_settings()
+                self.connection_successful = False
+                self.accept()
+        except subprocess.CalledProcessError as e:
+            self.connection_status_label.setText("Connection: ❌ Failed")
+            self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
+            error_text = f"❌ Connection test failed (exit code {e.returncode})\n\n"
+            if e.stdout:
+                error_text += f"Output:\n{e.stdout}\n"
+            if e.stderr:
+                error_text += f"Error:\n{e.stderr}\n"
+            self.results_text.append(error_text)
+            reply = QMessageBox.question(
+                self, "Connection Failed",
+                f"Connection test failed for {self.selected_board['name']}.\n\nApply anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._save_board_settings()
+                self.connection_successful = False
+                self.accept()
         except Exception as e:
             self.connection_status_label.setText("Connection: ❌ Error")
             self.connection_status_label.setStyleSheet("font-weight: bold; color: #F44336; margin: 5px 0px;")
             self.results_text.append(f"❌ Error during connection test: {str(e)}")
-            logging.error(f"❌ Error in board connection test during apply: {e}")
-            
-            # Ask user if they want to proceed anyway
-            reply = QMessageBox.question(self, "Connection Error", 
-                                       f"Error testing connection to {self.selected_board['name']}.\n\n"
-                                       f"Do you want to apply the selection anyway?",
-                                       QMessageBox.Yes | QMessageBox.No,
-                                       QMessageBox.No)
-            
+            reply = QMessageBox.question(
+                self, "Connection Error",
+                f"Error testing connection to {self.selected_board['name']}.\n\nApply anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
             if reply == QMessageBox.Yes:
+                self._save_board_settings()
                 self.connection_successful = False
                 self.accept()
     
     def get_selected_board(self):
         """Get the selected board configuration."""
+        self._save_board_settings()
         return self.selected_board
     
     def was_connection_successful(self):
@@ -13315,9 +13336,13 @@ class ImplementationStrategyDialog(QDialog):
         self.constraints_combo.addItem(auto_detect_text, "default")
         
         if self.available_constraints:
+            design_ccf = f"{self.design_name}.ccf"
             for constraint_file in self.available_constraints:
                 display_name = constraint_file
+                if constraint_file == design_ccf:
+                    display_name = f"{constraint_file} (recommended for this design)"
                 self.constraints_combo.addItem(display_name, constraint_file)
+            self._select_recommended_constraint()
         else:
             self.constraints_combo.addItem("No constraint files found", "none")
             self.constraints_combo.setEnabled(False)
@@ -13325,7 +13350,12 @@ class ImplementationStrategyDialog(QDialog):
         constraints_layout.addWidget(self.constraints_combo)
         
         # Add info label with more detailed information
-        info_label = QLabel(f"Auto-detect will use: {auto_detect_preview}")
+        selected_constraint = self.constraints_combo.currentData()
+        if selected_constraint and selected_constraint not in ("default", "none"):
+            info_text = f"Selected: {selected_constraint}"
+        else:
+            info_text = f"Auto-detect will use: {auto_detect_preview}"
+        info_label = QLabel(info_text)
         info_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 10px;")
         info_label.setWordWrap(True)
         constraints_layout.addWidget(info_label)
@@ -13379,6 +13409,26 @@ class ImplementationStrategyDialog(QDialog):
             description = self.strategies[current_strategy]
             self.description_label.setText(f"Description: {description}")
     
+    def _select_recommended_constraint(self):
+        """Pre-select the design-specific constraint file when available."""
+        if not self.design_name:
+            return
+
+        design_ccf = f"{self.design_name}.ccf"
+        if design_ccf not in self.available_constraints:
+            return
+
+        try:
+            from cc_project_manager_pkg.pnr_commands import PnRCommands
+            pnr = PnRCommands()
+            design_path = pnr.get_constraint_file_path(self.design_name)
+            if pnr.has_active_constraints(design_path):
+                idx = self.constraints_combo.findData(design_ccf)
+                if idx >= 0:
+                    self.constraints_combo.setCurrentIndex(idx)
+        except Exception as e:
+            logging.debug(f"Could not pre-select recommended constraint file: {e}")
+
     def _load_available_constraints(self):
         """Load available constraint files from the project.
         
@@ -13404,23 +13454,19 @@ class ImplementationStrategyDialog(QDialog):
             from cc_project_manager_pkg.pnr_commands import PnRCommands
             pnr = PnRCommands()
             
-            # Simulate the enhanced auto-detection logic
-            default_constraint_file = pnr.get_default_constraint_file_path()
-            available_constraints = pnr.list_available_constraint_files()
+            resolved_path, reason, is_template = pnr.resolve_constraint_file(
+                design_name=self.design_name
+            )
             
-            # First, check if default constraint file exists and has active constraints
-            if os.path.exists(default_constraint_file) and pnr.has_active_constraints(default_constraint_file):
-                return f"{os.path.basename(default_constraint_file)} (default with active pins)"
-            elif available_constraints:
-                # Look for the first constraint file with active pin assignments
-                for constraint_name in available_constraints:
-                    constraint_path = pnr.get_constraint_file_path(constraint_name)
-                    if pnr.has_active_constraints(constraint_path):
-                        return f"{constraint_name} (first with active pins)"
-                
-                # If no constraint file has active assignments, use the first available as fallback
-                if available_constraints:
-                    return f"{available_constraints[0]} (template only - may fail)"
+            if resolved_path:
+                basename = os.path.basename(resolved_path)
+                if is_template:
+                    return f"{basename} (template only - may fail)"
+                if "design-specific" in reason:
+                    return f"{basename} (design-specific with active pins)"
+                if "default constraint" in reason:
+                    return f"{basename} (default with active pins)"
+                return f"{basename} (first with active pins)"
             
             return "No constraint files found"
             
@@ -13661,7 +13707,7 @@ def main():
     """Main application entry point."""
     try:
         app = QApplication(sys.argv)
-        app.setApplicationName("GateMate Project Manager by JOCRIX")
+        app.setApplicationName(f"GateMate Project Manager by JOCRIX v{__version__}")
         app.setOrganizationName("JOCRIX")
         
         # Enable dark mode styling for the title bar and application

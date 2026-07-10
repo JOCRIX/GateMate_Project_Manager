@@ -84,6 +84,24 @@ class BoardsManager:
     def _get_default_boards(self) -> Dict[str, Dict[str, Any]]:
         """Get the default board configurations."""
         return {
+            'zi_0001_0001_logic1': {
+                'name': 'Zector Instruments Logic 1.0 GateMate',
+                'description': 'Zector Instruments ZI-0001-0001 Logic 1.0 GateMate A1 Development Board',
+                'manufacturer': 'Zector Instruments',
+                'model': 'ZI-0001-0001',
+                'fpga_family': 'GateMate',
+                'fpga_part': 'CCGM1A1',
+                'programming_tool': 'zi_fpga_loader',
+                'com_port': 'COM6',
+                'chunk_size': 64,
+                'serial_timeout': 3.0,
+                'supported_interfaces': ['serial'],
+                'default_interface': 'serial',
+                'programming_modes': ['sram'],
+                'verified': True,
+                'sort_priority': 0,
+                'notes': 'Uses the on-board STM32 FPGA loader over serial. Configure the COM port in FPGA Board Selection.',
+            },
             'olimex_gatemateevb': {
                 'name': 'Olimex GateMate EVB',
                 'description': 'Olimex GateMate Evaluation Board',
@@ -182,6 +200,12 @@ class BoardsManager:
                 current_boards[board_id] = board_config
                 updated = True
                 self.boards_logger.info(f"Added default board: {board_config['name']}")
+            elif board_id == 'zi_0001_0001_logic1':
+                # Add missing bundled Zector board fields without overwriting user settings
+                for key, value in board_config.items():
+                    if key not in current_boards[board_id]:
+                        current_boards[board_id][key] = value
+                        updated = True
         
         if updated:
             self._save_configuration()
@@ -234,8 +258,15 @@ class BoardsManager:
                 'verified': board_config.get('verified', False)
             })
         
-        # Sort by name for consistent display
-        display_info.sort(key=lambda x: x['name'])
+        # Sort: Zector / low sort_priority first, then alphabetically by name
+        def sort_key(entry):
+            board = boards.get(entry['identifier'], {})
+            priority = board.get('sort_priority', 100)
+            manufacturer = board.get('manufacturer', '')
+            zector_first = 0 if manufacturer == 'Zector Instruments' else 1
+            return (priority, zector_first, entry['name'].lower())
+
+        display_info.sort(key=sort_key)
         return display_info
     
     def add_board(self, board_id: str, board_config: Dict[str, Any]) -> bool:
@@ -343,12 +374,16 @@ class BoardsManager:
         """
         boards = self.get_board_display_info()
         
-        # Look for Olimex board first (current default)
+        # Prefer Zector Instruments board as default
+        for board in boards:
+            if board['identifier'] == 'zi_0001_0001_logic1':
+                return board
+        
+        # Look for Olimex board next
         for board in boards:
             if board['identifier'] == 'olimex_gatemateevb':
                 return board
         
-        # If no Olimex board, return the first available board
         if boards:
             return boards[0]
         
@@ -398,8 +433,15 @@ class BoardsManager:
             if field not in board_config:
                 errors.append(f"Missing required field: {field}")
         
-        # Check for either openFPGALoader_identifier (standard boards) or cable_type (custom boards)
-        if 'openFPGALoader_identifier' not in board_config and 'cable_type' not in board_config:
+        # Check for programming tool or openFPGALoader identifier
+        programming_tool = board_config.get('programming_tool', 'openfpgaloader')
+        if programming_tool == 'zi_fpga_loader':
+            if 'com_port' not in board_config:
+                errors.append("ZI FPGA Loader boards must specify 'com_port'")
+        elif (
+            'openFPGALoader_identifier' not in board_config
+            and 'cable_type' not in board_config
+        ):
             errors.append("Board must have either 'openFPGALoader_identifier' or 'cable_type'")
         
         # Validate supported interfaces
