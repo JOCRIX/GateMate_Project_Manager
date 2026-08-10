@@ -243,6 +243,20 @@ def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
     exe_dir = os.path.dirname(exe_path)
     suite_root = os.path.dirname(exe_dir) if os.path.basename(exe_dir).lower() == "bin" else ""
     bat = os.path.join(suite_root, "environment.bat") if suite_root else ""
+    is_gtkwave = "gtkwave" in os.path.basename(exe_path).lower()
+
+    def _ok(returncode: int, stdout: str = "", stderr: str = "") -> bool:
+        text = f"{stdout or ''}\n{stderr or ''}"
+        lower = text.lower()
+        if is_gtkwave and "gtkwave" in lower and (
+            "analyzer" in lower or "bsi" in lower or "v4." in lower or "v3." in lower
+        ):
+            return True
+        if returncode == 0 and bool(text.strip()):
+            return True
+        if "usage" in lower or ("version" in lower and returncode == 0):
+            return True
+        return False
 
     if os.name == "nt" and bat and os.path.isfile(bat):
         for flag in ("--version", "-V"):
@@ -255,8 +269,9 @@ def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
                     timeout=timeout,
                     cwd=suite_root,
                     shell=True,
+                    stdin=subprocess.DEVNULL,
                 )
-                if result.returncode == 0:
+                if _ok(result.returncode, result.stdout, result.stderr):
                     return True
             except Exception:
                 continue
@@ -271,6 +286,7 @@ def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
             env["PATH"] = exe_dir + os.pathsep + lib_dir + os.pathsep + env.get("PATH", "")
     else:
         env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+    env.setdefault("GIO_USE_VFS", "local")
 
     for args in ([exe_path, "--version"], [exe_path, "-V"], [exe_path, "--help"]):
         try:
@@ -281,12 +297,16 @@ def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
                 timeout=timeout,
                 env=env,
                 cwd=exe_dir,
+                stdin=subprocess.DEVNULL,
             )
-            text = (result.stdout or "") + (result.stderr or "")
-            if result.returncode == 0 or "usage" in text.lower() or "version" in text.lower():
+            if _ok(result.returncode, result.stdout, result.stderr):
                 return True
         except Exception:
             continue
+
+    # OSS CAD gtkwave: start.bat works even when automated probe is noisy (GLib dbus warn)
+    if is_gtkwave and suite_root and os.path.isfile(bat) and os.path.isfile(exe_path):
+        return True
     return False
 
 

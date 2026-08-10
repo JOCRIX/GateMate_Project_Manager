@@ -90,6 +90,22 @@ class SimulationManager(GHDLCommands):
                 return os.path.abspath(found)
         return ""
 
+    @staticmethod
+    def _gtkwave_probe_succeeded(returncode: int, stdout: str = "", stderr: str = "") -> bool:
+        """Interpret GTKWave --version output.
+
+        OSS CAD Suite ships GTKWave 4.x prealpha which may print a harmless
+        ``GLib-GIO-WARNING ... dbus`` on stderr and/or use a non-zero exit code
+        while still printing a valid banner. Treat a GTKWave banner as success.
+        """
+        text = f"{stdout or ''}\n{stderr or ''}"
+        lower = text.lower()
+        if "gtkwave" in lower and (
+            "analyzer" in lower or "bsi" in lower or "version" in lower or "v4." in lower or "v3." in lower
+        ):
+            return True
+        return returncode == 0 and bool(text.strip())
+
     def _probe_gtkwave(self, command: str) -> bool:
         """Return True if GTKWave responds under the OSS CAD environment."""
         if not command:
@@ -118,22 +134,27 @@ class SimulationManager(GHDLCommands):
                         timeout=20,
                         cwd=os.path.join(root, "bin"),
                     )
-                    if result.returncode == 0:
+                    if self._gtkwave_probe_succeeded(
+                        result.returncode, result.stdout, result.stderr
+                    ):
                         logging.info(
                             "GTKWave probe OK via environment.bat (%s %s)", exe, flag
                         )
                         return True
-                    logging.debug(
-                        "GTKWave environment.bat probe rc=%s flag=%s out=%r",
+                    logging.info(
+                        "GTKWave environment.bat probe rc=%s flag=%s out=%r err=%r",
                         result.returncode,
                         flag,
-                        ((result.stdout or "") + (result.stderr or ""))[:200],
+                        (result.stdout or "")[:300],
+                        (result.stderr or "")[:300],
                     )
         except Exception as e:
-            logging.debug("GTKWave environment.bat probe error: %s", e)
+            logging.warning("GTKWave environment.bat probe error: %s", e)
 
         # Fallback: apply env vars in-process (same as environment.bat contents)
         env = self._gtkwave_run_env(exe)
+        # Reduce noisy/failing win32 session dbus lookups in VMs
+        env.setdefault("GIO_USE_VFS", "local")
         cwd = os.path.dirname(exe)
         for flag in ("--version", "-V"):
             try:
@@ -144,12 +165,22 @@ class SimulationManager(GHDLCommands):
                     timeout=15,
                     env=env,
                     cwd=cwd,
+                    stdin=subprocess.DEVNULL,
                 )
-                if result.returncode == 0:
+                if self._gtkwave_probe_succeeded(
+                    result.returncode, result.stdout, result.stderr
+                ):
                     logging.info("GTKWave probe OK (%s %s)", exe, flag)
                     return True
+                logging.info(
+                    "GTKWave probe rc=%s flag=%s out=%r err=%r",
+                    result.returncode,
+                    flag,
+                    (result.stdout or "")[:300],
+                    (result.stderr or "")[:300],
+                )
             except Exception as e:
-                logging.debug("GTKWave probe failed (%s %s): %s", exe, flag, e)
+                logging.warning("GTKWave probe failed (%s %s): %s", exe, flag, e)
 
         if os.name == "nt":
             try:
@@ -161,12 +192,25 @@ class SimulationManager(GHDLCommands):
                     env=env,
                     cwd=cwd,
                     shell=True,
+                    stdin=subprocess.DEVNULL,
                 )
-                if result.returncode == 0:
+                if self._gtkwave_probe_succeeded(
+                    result.returncode, result.stdout, result.stderr
+                ):
                     logging.info("GTKWave probe OK via shell (%s)", exe)
                     return True
             except Exception as e:
-                logging.debug("GTKWave shell probe failed: %s", e)
+                logging.warning("GTKWave shell probe failed: %s", e)
+
+        # Last resort: binary present next to environment.bat (user-confirmed via start.bat)
+        bat = os.path.join(os.path.dirname(cwd), "environment.bat")
+        if os.path.basename(cwd).lower() == "bin" and os.path.isfile(bat) and os.path.isfile(exe):
+            logging.warning(
+                "GTKWave probe inconclusive but OSS CAD layout looks valid (%s); "
+                "treating as available",
+                exe,
+            )
+            return True
         return False
 
     def ensure_gtkwave_direct(self) -> str:
