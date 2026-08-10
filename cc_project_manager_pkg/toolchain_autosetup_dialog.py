@@ -82,9 +82,10 @@ class AutoSetupToolchainDialog(QDialog):
         intro = QLabel(
             "One-time machine setup for all future GateMate projects.\n"
             "Downloads pinned toolchain versions, then:\n"
-            "• OSS CAD Suite — runs environment.ps1 and persists YOSYSHQ_ROOT / PATH\n"
-            "• GHDL — adds its bin folder to your User PATH\n"
-            "• GTKWave — portable silent install (official zip + User PATH; no MSI exists)"
+            "• OSS CAD Suite — environment.ps1 + YOSYSHQ_ROOT / PATH "
+            "(includes Yosys, nextpnr, gmpack, openFPGALoader, GTKWave)\n"
+            "• GHDL — standalone Windows zip + User PATH\n"
+            "• TerosHDL — writes ~/.teroshdl2_config.json (GHDL/Yosys/GTKWave paths)"
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #AAAAAA;")

@@ -156,7 +156,7 @@ The GUI is organized into tabs for different operations:
 #### **Configuration Tab**
 - **Check Toolchain** - Verify tool availability and show versions
 - **Edit Toolchain Paths** - Configure tool locations (GHDL, Yosys, nextpnr, gmpack, …)
-- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL / GTKWave, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects
+- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects (GTKWave + openFPGALoader come from OSS CAD Suite)
 - **Project Settings** - Modify project-specific settings
 
 #### **Output Window**

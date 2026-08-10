@@ -61,20 +61,6 @@ PINNED_COMPONENTS: Tuple[PinnedComponent, ...] = (
         sha256=None,
         extract_subdir="ghdl",
     ),
-    PinnedComponent(
-        key="gtkwave",
-        title="GTKWave",
-        version="3.3.100 (win64 portable)",
-        # No official MSI/silent installer — SourceForge ships a zip. We install
-        # portably (extract + User PATH), which is the silent equivalent.
-        url=(
-            "https://downloads.sourceforge.net/project/gtkwave/"
-            "gtkwave-3.3.100-bin-win64/gtkwave-3.3.100-bin-win64.zip"
-        ),
-        archive_name="gtkwave-3.3.100-bin-win64.zip",
-        sha256=None,
-        extract_subdir="gtkwave",
-    ),
 )
 
 
@@ -222,12 +208,19 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
         yosys = find_executable(oss, ["yosys.exe", "yosys"])
         nextpnr = find_executable(oss, ["nextpnr-himbaechel.exe", "nextpnr-himbaechel"])
         gmpack = find_executable(oss, ["gmpack.exe", "gmpack"])
+        ofl = find_executable(oss, ["openFPGALoader.exe", "openfpgaloader.exe", "openFPGALoader"])
+        # GTKWave ships with OSS CAD Suite (matching GTK/DLL deps) — no separate download.
+        gtk_oss = find_executable(oss, ["gtkwave.exe", "gtkwave"])
         if yosys:
             paths["yosys"] = yosys
         if nextpnr:
             paths["nextpnr_himbaechel"] = nextpnr
         if gmpack:
             paths["gmpack"] = gmpack
+        if ofl:
+            paths["openfpgaloader"] = ofl
+        if gtk_oss:
+            paths["gtkwave"] = gtk_oss
 
     for root in (os.path.join(install_root, "ghdl"), install_root):
         ghdl = find_executable(root, ["ghdl.exe", "ghdl"])
@@ -235,13 +228,36 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
             paths["ghdl"] = ghdl
             break
 
-    for root in (os.path.join(install_root, "gtkwave"), install_root):
-        gtk = find_executable(root, ["gtkwave.exe", "gtkwave"])
-        if gtk:
-            paths["gtkwave"] = gtk
-            break
-
     return paths
+
+
+def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
+    """Return True if ``exe_path`` runs with ``--version`` or ``-V`` successfully.
+
+    Prepends the executable's directory to PATH so Windows DLL side-by-side loads work.
+    """
+    if not exe_path or not os.path.isfile(exe_path):
+        return False
+    env = os.environ.copy()
+    exe_dir = os.path.dirname(os.path.abspath(exe_path))
+    env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+    for args in ([exe_path, "--version"], [exe_path, "-V"], [exe_path, "--help"]):
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=exe_dir,
+            )
+            # Many tools print version to stdout/stderr; accept exit 0 or help text.
+            text = (result.stdout or "") + (result.stderr or "")
+            if result.returncode == 0 or "usage" in text.lower() or "version" in text.lower():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 # --- Windows persistent environment (User hive) ---------------------------------
@@ -397,14 +413,87 @@ def persist_oss_cad_user_environment(oss_root: str) -> None:
     prepend_user_path([bin_dir, lib_dir])
 
 
+def configure_teroshdl_settings(resolved: Dict[str, str]) -> List[str]:
+    """Write / merge ``~/.teroshdl2_config.json`` with Auto-Setup tool paths.
+
+    TerosHDL stores global tool settings in the user home directory (not in
+    VS Code settings.json). Installation paths must be directories containing
+    the binaries (bin folders), matching the TerosHDL UI fields.
+    """
+    notes: List[str] = []
+    config_path = os.path.join(os.path.expanduser("~"), ".teroshdl2_config.json")
+
+    config: dict = {}
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                config = loaded
+        except Exception as e:
+            notes.append(f"TerosHDL: could not read existing config ({e}); rewriting keys")
+
+    tools = config.setdefault("tools", {})
+    general = tools.setdefault("general", {})
+    general["select_tool"] = "ghdl"
+    general["execution_mode"] = general.get("execution_mode") or "gui"
+    general["waveform_viewer"] = "gtkwave"
+
+    gtk = resolved.get("gtkwave")
+    if gtk:
+        general["gtkwave_installation_path"] = os.path.dirname(os.path.abspath(gtk))
+
+    ghdl_cfg = tools.setdefault("ghdl", {})
+    ghdl = resolved.get("ghdl")
+    if ghdl:
+        ghdl_cfg["installation_path"] = os.path.dirname(os.path.abspath(ghdl))
+    ghdl_cfg["waveform"] = "vcd"
+    ghdl_cfg.setdefault("analyze_options", [])
+    ghdl_cfg.setdefault("run_options", [])
+
+    yosys_cfg = tools.setdefault("yosys", {})
+    yosys = resolved.get("yosys")
+    if yosys:
+        # Directory containing yosys.exe (OSS CAD: .../oss-cad-suite/bin)
+        yosys_cfg["installation_path"] = os.path.dirname(os.path.abspath(yosys))
+    yosys_cfg["arch"] = "xilinx"
+    yosys_cfg["output_format"] = "json"
+    yosys_cfg["yosys_as_subtool"] = False
+    yosys_cfg.setdefault("makefile_name", "")
+    yosys_cfg.setdefault("script_name", "")
+    yosys_cfg.setdefault("yosys_synth_options", [])
+
+    ofl = resolved.get("openfpgaloader")
+    if ofl:
+        openfpga_cfg = tools.setdefault("openfpga", {})
+        openfpga_cfg["installation_path"] = os.path.dirname(os.path.abspath(ofl))
+
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+        notes.append(f"TerosHDL: updated {config_path}")
+        if ghdl:
+            notes.append(f"TerosHDL GHDL path: {ghdl_cfg.get('installation_path')}")
+        if yosys:
+            notes.append(
+                f"TerosHDL Yosys path: {yosys_cfg.get('installation_path')} "
+                f"(arch=xilinx, format=json)"
+            )
+        if gtk:
+            notes.append(f"TerosHDL GTKWave path: {general.get('gtkwave_installation_path')}")
+    except Exception as e:
+        notes.append(f"TerosHDL: failed to write config: {e}")
+
+    return notes
+
+
 def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[str]:
     """One-time machine configuration after archives are extracted.
 
     - OSS CAD: run ``environment.ps1``, persist User env + PATH
-    - GHDL: add ``bin`` to User PATH
-    - GTKWave: portable silent install = extract already done; add exe dir to PATH
-    - Save global defaults for all future GateMate projects
-    - Also apply DIRECT paths to the currently open project (if any)
+    - GHDL / GTKWave / openFPGALoader: User PATH entries
+    - Save global defaults + TerosHDL ``~/.teroshdl2_config.json``
+    - Seed the currently open project when possible
     """
     notes: List[str] = []
     install_root = os.path.abspath(install_root)
@@ -444,14 +533,33 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
     gtk = resolved.get("gtkwave")
     if gtk:
         try:
-            # Portable silent install: zip has no MSI; PATH makes it available system-wide
             added = prepend_user_path([os.path.dirname(gtk)])
             notes.append(
-                f"GTKWave: portable install; User PATH += {os.path.dirname(gtk)}"
+                f"GTKWave: from OSS CAD Suite; User PATH += {os.path.dirname(gtk)}"
+                + ("" if added else " (already present)")
+            )
+            if not probe_executable(gtk):
+                notes.append(
+                    f"WARNING: GTKWave did not respond to --version/-V: {gtk}. "
+                    "On the VM run that path manually to capture the error."
+                )
+        except Exception as e:
+            notes.append(f"GTKWave: PATH update failed: {e}")
+
+    ofl = resolved.get("openfpgaloader")
+    if ofl:
+        try:
+            # openFPGALoader ships inside OSS CAD Suite (no separate Windows release zip).
+            # https://github.com/trabucayre/openFPGALoader
+            added = prepend_user_path([os.path.dirname(ofl)])
+            notes.append(
+                f"openFPGALoader: from OSS CAD Suite; User PATH += {os.path.dirname(ofl)}"
                 + ("" if added else " (already present)")
             )
         except Exception as e:
-            notes.append(f"GTKWave: PATH update failed: {e}")
+            notes.append(f"openFPGALoader: PATH update failed: {e}")
+    else:
+        notes.append("openFPGALoader: not found under OSS CAD Suite bin/")
 
     try:
         settings = load_global_settings()
@@ -470,25 +578,37 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
     except Exception as e:
         notes.append(f"Could not save global settings: {e}")
 
-    # Prefer PATH in the open project (tools are now on User PATH); keep DIRECT as backup.
+    notes.extend(configure_teroshdl_settings(resolved))
+
+    # Prefer PATH once User PATH is set; keep DIRECT as backup for this session.
     try:
         from .toolchain_manager import ToolChainManager
         from .simulation_manager import SimulationManager
 
         tcm = ToolChainManager()
-        for tool in ("ghdl", "yosys", "nextpnr_himbaechel", "gmpack"):
-            path = resolved.get(tool)
-            if path and tcm.add_tool_path(tool, path):
-                tcm.set_tool_preference(tool, "PATH")
-                notes.append(f"Current project: {tool} PATH (+ DIRECT backup {path})")
-        if gtk:
+        if getattr(tcm, "config_path", None):
+            for tool in ("ghdl", "yosys", "nextpnr_himbaechel", "gmpack", "openfpgaloader"):
+                path = resolved.get(tool)
+                if path and tcm.add_tool_path(tool, path):
+                    # DIRECT until the user restarts so Check Toolchain works now
+                    tcm.set_tool_preference(tool, "DIRECT")
+                    notes.append(f"Current project: {tool} DIRECT -> {path}")
+        else:
+            notes.append("Current project: no project config open — skipped project path writes")
+
+        if gtk and getattr(tcm, "config_path", None):
             sim = SimulationManager()
             if sim.add_gtkwave_path(gtk):
                 try:
-                    sim.set_gtkwave_preference("PATH")
+                    # DIRECT so Check Toolchain works before PATH refresh
+                    sim.set_gtkwave_preference("DIRECT")
                 except Exception:
                     pass
-                notes.append(f"Current project: gtkwave PATH (+ DIRECT backup {gtk})")
+                notes.append(f"Current project: gtkwave DIRECT -> {gtk}")
+            else:
+                notes.append(
+                    f"Current project: gtkwave path rejected by SimulationManager ({gtk})"
+                )
     except Exception as e:
         notes.append(f"Current project path update skipped: {e}")
 

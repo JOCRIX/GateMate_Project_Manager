@@ -1057,10 +1057,27 @@ class SimulationManager(GHDLCommands):
         
         gtkwave_tool = "gtkwave"
         try:
-            result = subprocess.run([gtkwave_tool, "--version"], 
-                                  capture_output=True, text=True, check=True, timeout=10)
-            logging.info(f"GTKWave version through PATH:\n{result.stdout}")
-            return True
+            result = subprocess.run(
+                [gtkwave_tool, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logging.info(f"GTKWave version through PATH:\n{result.stdout}")
+                return True
+            # Some builds only accept -V
+            result = subprocess.run(
+                [gtkwave_tool, "-V"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                logging.info(f"GTKWave version through PATH (-V):\n{result.stdout}")
+                return True
+            logging.error("GTKWave not found or not working through PATH")
+            return False
         except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             logging.error("GTKWave not found or not working through PATH")
             return False
@@ -1083,12 +1100,29 @@ class SimulationManager(GHDLCommands):
             if not os.path.exists(tool_path):
                 logging.error(f"GTKWave not found at configured path: {tool_path}")
                 return False
-            
-            # Test the tool
-            result = subprocess.run([tool_path, "--version"], 
-                                  capture_output=True, text=True, check=True, timeout=10)
-            logging.info(f"GTKWave confirmed working at {tool_path}")
-            return True
+
+            exe_dir = os.path.dirname(os.path.abspath(tool_path))
+            env = os.environ.copy()
+            env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+
+            for flag in ("--version", "-V"):
+                try:
+                    result = subprocess.run(
+                        [tool_path, flag],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        env=env,
+                        cwd=exe_dir,
+                    )
+                    if result.returncode == 0:
+                        logging.info(f"GTKWave confirmed working at {tool_path}")
+                        return True
+                except Exception:
+                    continue
+
+            logging.error(f"GTKWave at {tool_path} did not respond to --version/-V")
+            return False
             
         except Exception as e:
             logging.error(f"Error checking GTKWave at direct path: {e}")
@@ -1118,13 +1152,30 @@ class SimulationManager(GHDLCommands):
             logging.error(f"Path must end with {expected_binary}")
             return False
         
-        # Test the tool
+        # Test the tool (DLL search path = exe directory)
+        exe_dir = os.path.dirname(os.path.abspath(resolved_path))
+        env = os.environ.copy()
+        env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+        ok = False
         try:
-            result = subprocess.run([resolved_path, "--version"], 
-                                  capture_output=True, text=True, check=True, timeout=10)
-            logging.info(f"GTKWave test successful at {resolved_path}")
+            for flag in ("--version", "-V"):
+                result = subprocess.run(
+                    [resolved_path, flag],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=env,
+                    cwd=exe_dir,
+                )
+                if result.returncode == 0:
+                    logging.info(f"GTKWave test successful at {resolved_path}")
+                    ok = True
+                    break
         except Exception as e:
             logging.error(f"GTKWave test failed at {resolved_path}: {e}")
+            return False
+        if not ok:
+            logging.error(f"GTKWave test failed at {resolved_path}: no --version/-V response")
             return False
         
         # Add to configuration
@@ -1135,6 +1186,9 @@ class SimulationManager(GHDLCommands):
         
         # Save configuration
         try:
+            if not self.config_path:
+                logging.error("Cannot save GTKWave path: no project configuration file open")
+                return False
             with open(self.config_path, "w") as config_file:
                 yaml.safe_dump(self.project_config, config_file)
             logging.info(f"Added GTKWave path to configuration: {resolved_path}")

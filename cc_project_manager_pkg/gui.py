@@ -3401,7 +3401,7 @@ class MainWindow(QMainWindow):
             (
                 "Auto-Setup Toolchain",
                 self.auto_setup_toolchain,
-                "One-time machine setup: pinned OSS CAD / GHDL / GTKWave + PATH/env",
+                "One-time machine setup: pinned OSS CAD / GHDL + PATH/env",
             ),
             ("Configure GTKWave", self.configure_gtkwave, "Configure GTKWave path for simulation"),
         ]

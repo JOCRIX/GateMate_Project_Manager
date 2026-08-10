@@ -808,8 +808,14 @@ class ToolChainManager(HierarchyManager):
 
         try:
             logging.info(f"Adding tool chain path structure {tool_path_structure} to local config")
-            with open(self.config_path, "w") as config_file:
-                yaml.safe_dump(self.config, config_file)
+            if not self.config_path:
+                logging.error(
+                    "Failed to append tool_path_structure to the configuration file: "
+                    "no project config path (open or create a project first)"
+                )
+            else:
+                with open(self.config_path, "w") as config_file:
+                    yaml.safe_dump(self.config, config_file)
         except Exception as e:
             logging.error(f"Failed to append tool_path_structure to the configuration file: {e}")
 
