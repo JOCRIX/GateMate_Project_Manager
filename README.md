@@ -49,6 +49,8 @@ GateMate_Project_Manager/
 │   ├── ghdl_commands.py               # GHDL simulation integration
 │   ├── nextpnr_commands.py            # nextpnr-himbaechel + gmpack (primary P&R)
 │   ├── place_and_route_dialog.py      # Place & Route settings + multi-seed UI
+│   ├── toolchain_autosetup.py         # Pinned toolchain download/extract
+│   ├── toolchain_autosetup_dialog.py  # Auto-Setup Toolchain GUI
 │   ├── pnr_commands.py                # Legacy Cologne Chip p_r helpers (compat)
 │   ├── simulation_manager.py          # Simulation management
 │   ├── hierarchy_manager.py           # Project hierarchy management
@@ -154,6 +156,7 @@ The GUI is organized into tabs for different operations:
 #### **Configuration Tab**
 - **Check Toolchain** - Verify tool availability and show versions
 - **Edit Toolchain Paths** - Configure tool locations (GHDL, Yosys, nextpnr, gmpack, …)
+- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL / GTKWave, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects
 - **Project Settings** - Modify project-specific settings
 
 #### **Output Window**

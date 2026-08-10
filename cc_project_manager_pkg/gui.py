@@ -3398,7 +3398,12 @@ class MainWindow(QMainWindow):
         buttons = [
             ("Check Toolchain", self.check_toolchain_availability, "Check availability of required tools"),
             ("Edit Toolchain Paths", self.edit_toolchain_paths, "Configure paths to synthesis tools"),
-            ("Configure GTKWave", self.configure_gtkwave, "Configure GTKWave path for simulation")
+            (
+                "Auto-Setup Toolchain",
+                self.auto_setup_toolchain,
+                "One-time machine setup: pinned OSS CAD / GHDL / GTKWave + PATH/env",
+            ),
+            ("Configure GTKWave", self.configure_gtkwave, "Configure GTKWave path for simulation"),
         ]
         
         for text, callback, tooltip in buttons:
@@ -10481,7 +10486,21 @@ Simulation Options:
             # Refresh the status display in the Configuration tab
             self.refresh_toolchain_status()
             logging.info("Toolchain paths updated successfully")
-    
+
+    def auto_setup_toolchain(self):
+        """Download pinned toolchain archives into a user-selected directory."""
+        logging.info("Opening Auto-Setup Toolchain dialog...")
+        try:
+            from cc_project_manager_pkg.toolchain_autosetup_dialog import AutoSetupToolchainDialog
+
+            dialog = AutoSetupToolchainDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                self.refresh_toolchain_status()
+                logging.info("Auto-Setup Toolchain finished")
+        except Exception as e:
+            logging.error(f"Auto-Setup Toolchain failed to open: {e}")
+            QMessageBox.critical(self, "Error", f"Could not open Auto-Setup Toolchain:\n{e}")
+
     def configure_gtkwave(self):
         """Configure GTKWave settings."""
         logging.info("Opening GTKWave configuration...")

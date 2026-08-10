@@ -770,25 +770,37 @@ class ToolChainManager(HierarchyManager):
 
     def set_config_path_structure(self):
         """creates the path structure in the project configuration file"""
-    
-        #Loading this one into the project config
+
+        # Seed empty keys from one-time Auto-Setup machine defaults when present.
+        global_defaults = {}
+        try:
+            from .toolchain_autosetup import get_global_toolchain_defaults
+            global_defaults = get_global_toolchain_defaults()
+        except Exception:
+            global_defaults = {}
+
         tool_path_structure = {
-            tool: self.DEFAULT_TOOL_PATHS.get(tool, "")
+            tool: (
+                global_defaults.get(tool)
+                or self.DEFAULT_TOOL_PATHS.get(tool, "")
+            )
             for tool in self.__tool_chain
         }
 
         if "cologne_chip_gatemate_toolchain_paths" in self.config:
-            # Migrate older projects: ensure new keys exist (empty until user configures)
+            # Migrate older projects: ensure new keys exist; fill empties from Auto-Setup
             paths = self.config["cologne_chip_gatemate_toolchain_paths"]
             updated = False
             for tool, default_path in tool_path_structure.items():
                 if tool not in paths:
                     paths[tool] = default_path
                     updated = True
+                elif not paths.get(tool) and global_defaults.get(tool):
+                    paths[tool] = global_defaults[tool]
+                    updated = True
             if updated:
-                logging.info("Updated toolchain path structure with OSS CAD Suite tool keys")
+                logging.info("Updated toolchain path structure with Auto-Setup / OSS CAD defaults")
                 self.update_config()
-            # Structure already present and unchanged — stay quiet
             return
 
         logging.info("Creating a tool path structure in the project configuration file.")

@@ -966,18 +966,19 @@ class SimulationManager(GHDLCommands):
     def set_gtkwave_config_structure(self):
         """Sets up GTKWave configuration structure in project configuration"""
         logging.info("Setting up GTKWave configuration structure")
-        
-        # GTKWave tool path structure
-        gtkwave_structure = {
-            "gtkwave": ""
-        }
-        
-        # Check if the structure already exists
+
+        default_gtk = ""
+        try:
+            from .toolchain_autosetup import get_global_toolchain_defaults
+            default_gtk = get_global_toolchain_defaults().get("gtkwave", "") or ""
+        except Exception:
+            default_gtk = ""
+
+        gtkwave_structure = {"gtkwave": default_gtk}
+
         if "gtkwave_tool_path" not in self.project_config:
             logging.info("Creating GTKWave tool path structure in project configuration")
             self.project_config["gtkwave_tool_path"] = gtkwave_structure
-            
-            # Save to config
             try:
                 with open(self.config_path, "w") as config_file:
                     yaml.safe_dump(self.project_config, config_file)
@@ -985,7 +986,18 @@ class SimulationManager(GHDLCommands):
             except Exception as e:
                 logging.error(f"Failed to add GTKWave structure to configuration: {e}")
         else:
-            logging.info("GTKWave tool path structure already exists in project configuration")
+            paths = self.project_config.get("gtkwave_tool_path") or {}
+            if not paths.get("gtkwave") and default_gtk:
+                paths["gtkwave"] = default_gtk
+                self.project_config["gtkwave_tool_path"] = paths
+                try:
+                    with open(self.config_path, "w") as config_file:
+                        yaml.safe_dump(self.project_config, config_file)
+                    logging.info("Seeded GTKWave path from Auto-Setup machine defaults")
+                except Exception as e:
+                    logging.error(f"Failed to seed GTKWave path: {e}")
+            else:
+                logging.info("GTKWave tool path structure already exists in project configuration")
     
     def check_gtkwave(self) -> bool:
         """
