@@ -21,7 +21,7 @@ class SimulationManager(GHDLCommands):
         except Exception:
             env = os.environ.copy()
 
-        if exe_path:
+        if exe_path and os.path.isfile(exe_path):
             exe_dir = os.path.dirname(os.path.abspath(exe_path))
             # Sibling lib/ next to bin/ (…/oss-cad-suite/bin/gtkwave.exe)
             suite_root = os.path.dirname(exe_dir)
@@ -32,21 +32,83 @@ class SimulationManager(GHDLCommands):
             env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
             if os.path.isdir(lib_dir):
                 root = suite_root if suite_root.endswith(os.sep) else suite_root + os.sep
-                env.setdefault("YOSYSHQ_ROOT", root)
-                env.setdefault("GTK_EXE_PREFIX", suite_root)
-                env.setdefault("GTK_DATA_PREFIX", suite_root)
+                env["YOSYSHQ_ROOT"] = root
+                env["GTK_EXE_PREFIX"] = suite_root
+                env["GTK_DATA_PREFIX"] = suite_root
+                pixbuf_dir = os.path.join(
+                    suite_root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders"
+                )
+                pixbuf_cache = os.path.join(
+                    suite_root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders.cache"
+                )
+                if os.path.isdir(pixbuf_dir):
+                    env["GDK_PIXBUF_MODULEDIR"] = pixbuf_dir
+                if os.path.isfile(pixbuf_cache):
+                    env["GDK_PIXBUF_MODULE_FILE"] = pixbuf_cache
         return env
+
+    def _resolve_gtkwave_executable(self) -> str:
+        """Return an absolute path to gtkwave.exe (required on Windows DLL load).
+
+        Invoking bare ``gtkwave`` / ``gtkwave.exe`` via CreateProcess fails with
+        STATUS_DLL_NOT_FOUND even when bin+lib are on PATH; the absolute path works.
+        """
+        # 1) Project DIRECT path
+        configured = (
+            self.project_config.get("gtkwave_tool_path", {}) or {}
+        ).get("gtkwave", "") or ""
+        if configured and os.path.isfile(configured):
+            return os.path.abspath(configured)
+
+        # 2) Auto-Setup machine defaults
+        try:
+            from .toolchain_autosetup import get_global_toolchain_defaults
+            global_gtk = get_global_toolchain_defaults().get("gtkwave", "") or ""
+            if global_gtk and os.path.isfile(global_gtk):
+                return os.path.abspath(global_gtk)
+        except Exception:
+            pass
+
+        # 3) Infer from OSS CAD Suite root (yosys/nextpnr paths or YOSYSHQ_ROOT)
+        try:
+            from .toolchain_manager import ToolChainManager
+            root = ToolChainManager().get_oss_cad_suite_root()
+            if root:
+                candidate = os.path.join(root, "bin", "gtkwave.exe")
+                if os.path.isfile(candidate):
+                    return os.path.abspath(candidate)
+                candidate = os.path.join(root, "bin", "gtkwave")
+                if os.path.isfile(candidate):
+                    return os.path.abspath(candidate)
+        except Exception:
+            pass
+
+        # 4) PATH lookup → absolute
+        import shutil
+        for name in ("gtkwave.exe", "gtkwave"):
+            found = shutil.which(name)
+            if found:
+                return os.path.abspath(found)
+        return ""
 
     def _probe_gtkwave(self, command: str) -> bool:
         """Return True if GTKWave responds to --version or -V with the OSS CAD env."""
         if not command:
             return False
-        env = self._gtkwave_run_env(command if os.path.isfile(command) else None)
-        cwd = os.path.dirname(command) if os.path.isfile(command) else None
+        # Always use an absolute path on Windows (name-only CreateProcess breaks DLL load)
+        exe = command
+        if not os.path.isfile(exe):
+            exe = self._resolve_gtkwave_executable()
+        if not exe or not os.path.isfile(exe):
+            logging.error("GTKWave probe: no absolute executable resolved for %r", command)
+            return False
+        exe = os.path.abspath(exe)
+        env = self._gtkwave_run_env(exe)
+        cwd = os.path.dirname(exe)
         for flag in ("--version", "-V"):
             try:
                 result = subprocess.run(
-                    [command, flag],
+                    [exe, flag],
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -54,10 +116,18 @@ class SimulationManager(GHDLCommands):
                     cwd=cwd,
                 )
                 if result.returncode == 0:
-                    logging.info("GTKWave probe OK (%s %s)", command, flag)
+                    logging.info("GTKWave probe OK (%s %s)", exe, flag)
                     return True
+                logging.debug(
+                    "GTKWave probe rc=%s for %s %s stdout=%r stderr=%r",
+                    result.returncode,
+                    exe,
+                    flag,
+                    (result.stdout or "")[:200],
+                    (result.stderr or "")[:200],
+                )
             except Exception as e:
-                logging.debug("GTKWave probe failed (%s %s): %s", command, flag, e)
+                logging.debug("GTKWave probe failed (%s %s): %s", exe, flag, e)
         return False
     
     def __init__(self, simulation_time: int = None, time_prefix: str = None):
@@ -982,12 +1052,15 @@ class SimulationManager(GHDLCommands):
             logging.error(f"VCD file not found: {vcd_file_path}")
             return False
         
-        # Get GTKWave access command
+        # Get GTKWave access command — always absolute on Windows
         gtkwave_cmd = self._get_gtkwave_access()
-        if not gtkwave_cmd:
+        if gtkwave_cmd and not os.path.isfile(gtkwave_cmd):
+            gtkwave_cmd = self._resolve_gtkwave_executable()
+        if not gtkwave_cmd or not os.path.isfile(gtkwave_cmd):
             print("[X] GTKWave access command not available")
             logging.error("GTKWave access command not available")
             return False
+        gtkwave_cmd = os.path.abspath(gtkwave_cmd)
         
         try:
             # Launch GTKWave with the VCD file
@@ -995,15 +1068,20 @@ class SimulationManager(GHDLCommands):
             logging.info(f"Launching GTKWave: {gtkwave_cmd} {vcd_file_path}")
             
             # Launch GTKWave in background (OSS CAD needs bin+lib on PATH)
-            env = self._gtkwave_run_env(gtkwave_cmd if os.path.isfile(gtkwave_cmd) else None)
+            env = self._gtkwave_run_env(gtkwave_cmd)
             if os.name == 'nt':  # Windows
                 subprocess.Popen(
                     [gtkwave_cmd, vcd_file_path],
                     creationflags=subprocess.CREATE_NEW_CONSOLE,
                     env=env,
+                    cwd=os.path.dirname(gtkwave_cmd),
                 )
             else:  # Unix/Linux
-                subprocess.Popen([gtkwave_cmd, vcd_file_path], env=env)
+                subprocess.Popen(
+                    [gtkwave_cmd, vcd_file_path],
+                    env=env,
+                    cwd=os.path.dirname(gtkwave_cmd),
+                )
             
             print("GTKWave launched successfully")
             logging.info("GTKWave launched successfully")
@@ -1099,18 +1177,17 @@ class SimulationManager(GHDLCommands):
     
     def check_gtkwave_path(self) -> bool:
         """
-        Check if GTKWave is available through the PATH environment variable
+        Check if GTKWave is available through the PATH / OSS CAD Suite layout.
         
         Returns:
             bool: True if available through PATH, False otherwise
         """
         logging.info("Checking if GTKWave is available through PATH")
-        if self._probe_gtkwave("gtkwave"):
+        # Never invoke bare \"gtkwave\" — resolve to absolute path first (Windows DLL load).
+        exe = self._resolve_gtkwave_executable()
+        if exe and self._probe_gtkwave(exe):
             return True
-        # Also try gtkwave.exe on Windows PATH
-        if os.name == "nt" and self._probe_gtkwave("gtkwave.exe"):
-            return True
-        logging.error("GTKWave not found or not working through PATH")
+        logging.error("GTKWave not found or not working through PATH/OSS CAD Suite")
         return False
     
     def check_gtkwave_direct(self) -> bool:
@@ -1125,12 +1202,14 @@ class SimulationManager(GHDLCommands):
         try:
             tool_path = self.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
             if not tool_path:
-                # Fall back to Auto-Setup machine defaults
                 try:
                     from .toolchain_autosetup import get_global_toolchain_defaults
                     tool_path = get_global_toolchain_defaults().get("gtkwave", "") or ""
                 except Exception:
                     tool_path = ""
+            if not tool_path:
+                # Last resort: same resolver as PATH check (OSS CAD bin)
+                tool_path = self._resolve_gtkwave_executable()
             if not tool_path:
                 logging.info("No direct path configured for GTKWave")
                 return False
@@ -1141,6 +1220,16 @@ class SimulationManager(GHDLCommands):
 
             if self._probe_gtkwave(tool_path):
                 logging.info(f"GTKWave confirmed working at {tool_path}")
+                # Persist resolved path if project had none
+                configured = (
+                    self.project_config.get("gtkwave_tool_path", {}) or {}
+                ).get("gtkwave", "")
+                if not configured and self.config_path:
+                    try:
+                        self.add_gtkwave_path(tool_path)
+                        self.set_gtkwave_preference("DIRECT")
+                    except Exception:
+                        pass
                 return True
 
             logging.error(f"GTKWave at {tool_path} did not respond to --version/-V")

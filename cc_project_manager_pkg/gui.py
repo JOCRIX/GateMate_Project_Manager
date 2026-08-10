@@ -983,23 +983,33 @@ class GTKWaveConfigDialog(QDialog):
             return
         
         try:
-            # Test the GTKWave executable
             import subprocess
-            result = subprocess.run([path, "--version"], 
-                                  capture_output=True, text=True, check=True, timeout=10)
-            QMessageBox.information(
-                self, 
-                "Test Successful", 
-                f"✅ GTKWave test successful!\n\nVersion info:\n{result.stdout.strip()}"
-            )
+            # Absolute path + OSS CAD bin/lib env (bare name fails DLL load on Windows)
+            if self.sim_manager and self.sim_manager._probe_gtkwave(path):
+                abs_path = os.path.abspath(path)
+                env = self.sim_manager._gtkwave_run_env(abs_path)
+                result = subprocess.run(
+                    [abs_path, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=env,
+                    cwd=os.path.dirname(abs_path),
+                )
+                QMessageBox.information(
+                    self,
+                    "Test Successful",
+                    f"✅ GTKWave test successful!\n\nVersion info:\n{(result.stdout or result.stderr or '').strip()}",
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Test Failed",
+                    "❌ GTKWave did not respond to --version/-V.\n"
+                    "Use the absolute path to oss-cad-suite\\bin\\gtkwave.exe.",
+                )
         except subprocess.TimeoutExpired:
-            QMessageBox.warning(self, "Test Timeout", "GTKWave test timed out after 10 seconds.")
-        except subprocess.CalledProcessError as e:
-            QMessageBox.critical(
-                self, 
-                "Test Failed", 
-                f"❌ GTKWave test failed!\n\nError: {e}\nOutput: {e.stdout}\nError: {e.stderr}"
-            )
+            QMessageBox.warning(self, "Test Timeout", "GTKWave test timed out after 15 seconds.")
         except Exception as e:
             QMessageBox.critical(self, "Test Error", f"❌ Error testing GTKWave:\n{e}")
     
