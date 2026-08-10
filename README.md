@@ -25,9 +25,13 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ![image](https://github.com/user-attachments/assets/0c745c4f-4d77-4323-b3bc-b838b603b9cb)
 
 - **🔧 Toolchain Management** - Automatic detection and configuration of FPGA tools (PATH / DIRECT), with version display for OSS CAD tools
-
+  
 ![image](https://github.com/user-attachments/assets/bf4547df-9f65-486d-b3e5-100dec155580)
 
+  - Automagically install all the required tools for getting started with the GateMate series of FPGAs
+    
+![image](https://github.com/JOCRIX/GateMate_Project_Manager/blob/main/images/Autosetup.svg)
+ 
 - **📊 Uploading to FPGA** - Program FPGA SRAM or onboard flash memory
   - **Zector Instruments Logic 1.0 GateMate (ZI-0001-0001)** — serial programming via the bundled ZI FPGA Loader (COM port, live progress in Output; Test Connection queries firmware `VERSION`)
   - **Olimex GateMate EVB** and other boards — openFPGALoader (JTAG/SPI)
