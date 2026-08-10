@@ -269,7 +269,12 @@ class SimulationManager(GHDLCommands):
             ieee_library = sim_config.get("ieee_library", "synopsys")
             logging.info(f"Using simulation configuration: VHDL={vhdl_standard}, IEEE={ieee_library}")
         else:
-            logging.info(f"No simulation configuration found, using defaults: VHDL={vhdl_standard}, IEEE={ieee_library}")
+            log_fn = logging.debug if not self.config_path else logging.info
+            log_fn(
+                "No simulation configuration found, using defaults: VHDL=%s, IEEE=%s",
+                vhdl_standard,
+                ieee_library,
+            )
         
         # Now call super() with the simulation configuration settings
         super().__init__(vhdl_std=vhdl_standard, ieee_lib=ieee_library)
@@ -319,7 +324,10 @@ class SimulationManager(GHDLCommands):
                     logging.info(f"Loaded simulation configuration from {self.sim_config_path}")
                     return config
             else:
-                logging.warning(f"Simulation config file not found at {self.sim_config_path}. Using defaults.")
+                logging.debug(
+                    "Simulation config file not found at %s. Using defaults.",
+                    self.sim_config_path,
+                )
                 return self._get_default_simulation_config()
         except Exception as e:
             logging.error(f"Error loading simulation configuration: {e}")
@@ -498,27 +506,22 @@ class SimulationManager(GHDLCommands):
         true if OK, false if not generated or failure
         
         """
-        
-        logging.info("Checking if simulation structure has already been generated in the project configuration.")
         available_keys = list(self.project_config.keys())
         if "simulation_settings" in available_keys:
-            logging.info("Simulation setting structure has already been generated. Skipping.")
+            logging.debug("Simulation setting structure already present. Skipping.")
             return False
-        
-        logging.info("Generating a structure for simulation settings in the project configuration file")
 
         simulation_settings = {
-            "simulation_time" : self.simulation_time,
-            "time_prefix" : self.time_prefix
+            "simulation_time": self.simulation_time,
+            "time_prefix": self.time_prefix,
         }
-
-        #append simulation settings to config
         self.project_config["simulation_settings"] = simulation_settings
-        
-        #write to project configuration file.
+
         if not self.config_path:
-            logging.debug("No project config path; simulation_settings kept in-memory only")
+            logging.debug("No project open; simulation_settings kept in-memory only")
             return True
+
+        logging.info("Generating a structure for simulation settings in the project configuration file")
 
         try:
             with open(self.config_path, "w") as config_file:
@@ -1225,6 +1228,17 @@ class SimulationManager(GHDLCommands):
 
     def set_gtkwave_config_structure(self):
         """Sets up GTKWave configuration structure in project configuration"""
+        if not self.config_path and "gtkwave_tool_path" not in self.project_config:
+            logging.debug("No project open; seeding GTKWave paths in memory only")
+            default_gtk = ""
+            try:
+                from .toolchain_autosetup import get_global_toolchain_defaults
+                default_gtk = get_global_toolchain_defaults().get("gtkwave", "") or ""
+            except Exception:
+                default_gtk = ""
+            self.project_config["gtkwave_tool_path"] = {"gtkwave": default_gtk}
+            return
+
         logging.info("Setting up GTKWave configuration structure")
 
         default_gtk = ""
@@ -1482,8 +1496,11 @@ class SimulationManager(GHDLCommands):
         
         try:
             if not self.config_path:
-                logging.error("Cannot save GTKWave preference: no project configuration file open")
-                return False
+                logging.debug(
+                    "GTKWave preference %s kept in memory (no project open yet).",
+                    preference,
+                )
+                return True
             with open(self.config_path, "w") as config_file:
                 yaml.safe_dump(self.project_config, config_file)
             logging.info(f"Set GTKWave preference to: {preference}")

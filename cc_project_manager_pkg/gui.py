@@ -3639,9 +3639,17 @@ class MainWindow(QMainWindow):
                                 else:
                                     smart_default = "PATH"  # Fallback
                                 
-                                tcm.set_tool_preference(internal_name, smart_default)
-                                logging.info(f"Updated {tool_name} preference from {current_pref} to {smart_default} (current preference not working)")
-                                current_pref = smart_default
+                                if smart_default != current_pref:
+                                    tcm.set_tool_preference(internal_name, smart_default)
+                                    logging.info(
+                                        f"Updated {tool_name} preference from {current_pref} "
+                                        f"to {smart_default} (current preference not working)"
+                                    )
+                                    current_pref = smart_default
+                                else:
+                                    # Keep in-memory preference for UI without noisy "PATH→PATH" logs
+                                    tcm.set_tool_preference(internal_name, smart_default)
+                                    current_pref = smart_default
                             
                             # Update dropdown to reflect current preference
                             dropdown.blockSignals(True)
@@ -3694,10 +3702,13 @@ class MainWindow(QMainWindow):
                                 else:
                                     smart_default = "DIRECT"  # still prefer DIRECT for OSS CAD
                                 
-                                tcm.set_tool_preference("gtkwave", smart_default)
-                                logging.info(
-                                    f"Updated GTKWave preference from {gtkwave_pref} to {smart_default}"
-                                )
+                                if smart_default != gtkwave_pref:
+                                    tcm.set_tool_preference("gtkwave", smart_default)
+                                    logging.info(
+                                        f"Updated GTKWave preference from {gtkwave_pref} to {smart_default}"
+                                    )
+                                else:
+                                    tcm.set_tool_preference("gtkwave", smart_default)
                                 gtkwave_pref = smart_default
                         
                         # Update GTKWave dropdown
@@ -3707,7 +3718,7 @@ class MainWindow(QMainWindow):
                         gtkwave_dropdown.blockSignals(False)
                         
                     except Exception as e:
-                        logging.warning(f"Error handling GTKWave preferences: {e}")
+                        logging.debug("GTKWave preference handling skipped: %s", e)
                 
                 # Get legacy preference for display (backward compatibility)
                 legacy_preference = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "MIXED")
@@ -4045,18 +4056,17 @@ class MainWindow(QMainWindow):
     def refresh_project_status(self):
         """Refresh the project status display."""
         try:
-            logging.info("🔄 Refreshing project status...")
             from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
             
             # Find project configuration using the same logic as add_vhdl_file
             project_config_path, project_dir = self.find_project_config()
             
             if not project_config_path:
-                # No project found
-                logging.warning("❌ No project configuration found")
-                self.project_name_label.setText("Project: Error loading")
-                self.project_name_label.setStyleSheet("color: #F44336;")
-                self.project_path_label.setText("Path: Check project configuration")
+                # Fresh start / no project — quiet idle state (not an error)
+                logging.info("No project loaded — open or create a project to begin")
+                self.project_name_label.setText("Project: No project loaded")
+                self.project_name_label.setStyleSheet("color: #888888;")
+                self.project_path_label.setText("Path: Create or load a project")
                 self.files_tree.clear()
                 
                 # Reset statistics
@@ -4066,8 +4076,9 @@ class MainWindow(QMainWindow):
                 self.stats_labels['missing'].setText("Missing: 0")
                 self.stats_labels['implemented'].setText("Implemented: 0")
                 self.stats_labels['bitstreams'].setText("Bitstreams: 0")
-                logging.info("📊 Project status display reset to default values")
                 return
+            
+            logging.info("🔄 Refreshing project status...")
             
             # Change to project directory temporarily to load hierarchy
             original_cwd = os.getcwd()
@@ -4647,9 +4658,27 @@ class MainWindow(QMainWindow):
     def refresh_simulation_status(self):
         """Refresh the simulation status display."""
         try:
+            if not self.has_project_loaded():
+                logging.debug("Skipping simulation status refresh — no project loaded")
+                if hasattr(self, 'sim_config_label'):
+                    self.sim_config_label.setText("Simulation Settings: No project loaded")
+                    self.sim_config_label.setStyleSheet("font-weight: bold; color: #888888;")
+                if hasattr(self, 'gtkwave_status_label'):
+                    self.gtkwave_status_label.setText("GTKWave: —")
+                    self.gtkwave_status_label.setStyleSheet("font-weight: bold; color: #888888;")
+                if hasattr(self, 'testbench_tree'):
+                    self.testbench_tree.clear()
+                if hasattr(self, 'simulation_tree'):
+                    self.simulation_tree.clear()
+                if hasattr(self, 'sim_stats_labels'):
+                    for label in self.sim_stats_labels.values():
+                        label.setText("0")
+                return
+
             logging.info("🔄 Refreshing simulation status...")
             
             # Update simulation settings display
+            sim_manager = None
             try:
                 from cc_project_manager_pkg.simulation_manager import SimulationManager
                 sim_manager = SimulationManager()
@@ -4748,7 +4777,7 @@ class MainWindow(QMainWindow):
                     ])
                     no_tb_item.setForeground(0, QColor("#FFA726"))
                     no_tb_item.setForeground(3, QColor("#F44336"))
-                    logging.warning("⚠️ No testbenches found in project")
+                    logging.info("No testbenches found in project")
                     
             except Exception as e:
                 logging.error(f"Error loading testbenches: {e}")
@@ -4768,6 +4797,8 @@ class MainWindow(QMainWindow):
             
             # Get available simulations
             try:
+                if sim_manager is None:
+                    raise RuntimeError("SimulationManager not initialized")
                 available_sims = sim_manager.get_available_simulations()
                 
                 # Count totals
@@ -5152,6 +5183,15 @@ class MainWindow(QMainWindow):
     def refresh_synthesis_status(self):
         """Refresh the synthesis status display."""
         try:
+            if not self.has_project_loaded():
+                logging.debug("Skipping synthesis status refresh — no project loaded")
+                if hasattr(self, 'synth_config_label'):
+                    self.synth_config_label.setText("Synthesis Strategy: No project loaded")
+                    self.synth_config_label.setStyleSheet("font-weight: bold; color: #888888;")
+                if hasattr(self, 'synthesis_tree'):
+                    self.synthesis_tree.clear()
+                return
+
             logging.info("🔄 Refreshing synthesis status...")
             
             # Update synthesis strategy display
@@ -6829,6 +6869,11 @@ class MainWindow(QMainWindow):
         logging.info("Refreshing project status display...")
         self.refresh_project_status()
     
+    def has_project_loaded(self) -> bool:
+        """True when a project config exists for the current/recent project path."""
+        project_config_path, _ = self.find_project_config()
+        return bool(project_config_path)
+
     def find_project_config(self, search_dir=None):
         """Find project configuration file in the given directory or current working directory.
         
@@ -10663,8 +10708,9 @@ Simulation Options:
             
             # Check if synthesis configuration exists
             if "synthesis_configuration" not in config:
-                # No configuration exists, save defaults automatically
-                self._save_synthesis_configuration(default_config)
+                # No configuration exists — only persist when a project is open
+                if tcm.config_path:
+                    self._save_synthesis_configuration(default_config)
                 synth_config = default_config.copy()
             else:
                 # Get existing synthesis configuration
@@ -10762,6 +10808,12 @@ Simulation Options:
             from cc_project_manager_pkg.toolchain_manager import ToolChainManager
             tcm = ToolChainManager()
             
+            if not tcm.config_path:
+                logging.debug(
+                    "Skipping synthesis configuration save — no project open yet."
+                )
+                return False
+
             # Update the synthesis configuration section
             tcm.config["synthesis_configuration"] = config_dict
             
@@ -11186,6 +11238,16 @@ Simulation Options:
     def refresh_implementation_status(self):
         """Refresh the implementation status display."""
         try:
+            if not self.has_project_loaded():
+                logging.debug("Skipping implementation status refresh — no project loaded")
+                if hasattr(self, 'impl_config_label'):
+                    self.impl_config_label.setText("Implementation Strategy: No project loaded")
+                    self.impl_config_label.setStyleSheet("font-weight: bold; color: #888888;")
+                if hasattr(self, 'implementation_tree'):
+                    self.implementation_tree.clear()
+                    self.selected_tree_item = None
+                return
+
             logging.info("🔄 Refreshing implementation status...")
             
             # Update implementation strategy display

@@ -222,9 +222,13 @@ class ToolChainManager(HierarchyManager):
             if "cologne_chip_gatemate_tool_preferences" not in self.config:
                 self.config["cologne_chip_gatemate_tool_preferences"] = {}
             
-            # Set the preference
-            self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = preference.upper()
-            logging.info(f"Set {tool_name} preference to {preference.upper()}")
+            new_pref = preference.upper()
+            old_pref = self.config["cologne_chip_gatemate_tool_preferences"].get(tool_name)
+            self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = new_pref
+            if old_pref != new_pref:
+                logging.info(f"Set {tool_name} preference to {new_pref}")
+            else:
+                logging.debug(f"{tool_name} preference already {new_pref}")
             
             # Save configuration
             return self.update_config()
@@ -237,9 +241,13 @@ class ToolChainManager(HierarchyManager):
         if "cologne_chip_gatemate_tool_preferences" not in self.config:
             self.config["cologne_chip_gatemate_tool_preferences"] = {}
         
-        # Set the preference
-        self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = preference.upper()
-        logging.info(f"Set {tool_name} preference to {preference.upper()}")
+        new_pref = preference.upper()
+        old_pref = self.config["cologne_chip_gatemate_tool_preferences"].get(tool_name)
+        self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = new_pref
+        if old_pref != new_pref:
+            logging.info(f"Set {tool_name} preference to {new_pref}")
+        else:
+            logging.debug(f"{tool_name} preference already {new_pref}")
         
         # Save configuration
         return self.update_config()
@@ -718,7 +726,10 @@ class ToolChainManager(HierarchyManager):
         """Update the configuration file with current config data."""
         try:
             if not self.config_path:
-                logging.warning("No configuration file path available. Configuration not saved.")
+                # Expected before Create/Load Project — keep in-memory only
+                logging.debug(
+                    "No project configuration open; skipping save (in-memory only)."
+                )
                 return False
             with open(self.config_path, "w") as config_file:
                 yaml.safe_dump(self.config, config_file)
@@ -957,19 +968,24 @@ class ToolChainManager(HierarchyManager):
                 self.update_config()
             return
 
-        logging.info("Creating a tool path structure in the project configuration file.")
         self.config["cologne_chip_gatemate_toolchain_paths"] = tool_path_structure
 
+        if not self.config_path:
+            # No project yet — seed in-memory defaults without alarming the user
+            logging.debug(
+                "Seeded toolchain path structure in memory (no project open yet)."
+            )
+            return
+
         try:
-            logging.info(f"Adding tool chain path structure {tool_path_structure} to local config")
-            if not self.config_path:
-                logging.error(
-                    "Failed to append tool_path_structure to the configuration file: "
-                    "no project config path (open or create a project first)"
-                )
-            else:
-                with open(self.config_path, "w") as config_file:
-                    yaml.safe_dump(self.config, config_file)
+            logging.info(
+                "Creating toolchain path structure in the project configuration file."
+            )
+            logging.info(
+                f"Adding tool chain path structure {tool_path_structure} to local config"
+            )
+            with open(self.config_path, "w") as config_file:
+                yaml.safe_dump(self.config, config_file)
         except Exception as e:
             logging.error(f"Failed to append tool_path_structure to the configuration file: {e}")
 
