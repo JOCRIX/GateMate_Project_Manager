@@ -94,20 +94,30 @@ class SimulationManager(GHDLCommands):
     def _gtkwave_probe_succeeded(returncode: int, stdout: str = "", stderr: str = "") -> bool:
         """Interpret GTKWave --version output.
 
-        OSS CAD Suite ships GTKWave 4.x prealpha which may print a harmless
-        ``GLib-GIO-WARNING ... dbus`` on stderr and/or use a non-zero exit code
-        while still printing a valid banner. Treat a GTKWave banner as success.
+        OSS CAD Suite ships GTKWave 4.x prealpha which prints a harmless
+        ``GLib-GIO-WARNING ... dbus`` on stderr while still returning a valid
+        banner (and often exit code 0). Treat any GTKWave banner as success.
         """
         text = f"{stdout or ''}\n{stderr or ''}"
         lower = text.lower()
         if "gtkwave" in lower and (
-            "analyzer" in lower or "bsi" in lower or "version" in lower or "v4." in lower or "v3." in lower
+            "analyzer" in lower
+            or "bsi" in lower
+            or "prealpha" in lower
+            or "v4." in lower
+            or "v3." in lower
         ):
             return True
-        return returncode == 0 and bool(text.strip())
+        return False
 
     def _probe_gtkwave(self, command: str) -> bool:
-        """Return True if GTKWave responds under the OSS CAD environment."""
+        """Return True if GTKWave responds under the OSS CAD environment.
+
+        Official interaction: set the suite env (same vars as ``environment.bat``),
+        then run ``bin\\gtkwave.exe``. We apply those vars in-process first so we
+        do not re-run ``gdk-pixbuf-query-loaders`` on every Check Toolchain click
+        (that step is for one-time setup via Auto-Setup / start.bat).
+        """
         if not command:
             return False
         exe = command
@@ -117,45 +127,11 @@ class SimulationManager(GHDLCommands):
             logging.error("GTKWave probe: no absolute executable resolved for %r", command)
             return False
         exe = os.path.abspath(exe)
-
-        # Preferred: YosysHQ Windows method — call environment.bat then gtkwave
-        try:
-            from .toolchain_manager import ToolChainManager
-            tcm = ToolChainManager()
-            root = tcm.get_oss_cad_suite_root()
-            if not root:
-                exe_dir = os.path.dirname(exe)
-                if os.path.basename(exe_dir).lower() == "bin":
-                    root = os.path.dirname(exe_dir)
-            if root and os.path.isfile(os.path.join(root, "environment.bat")):
-                for flag in ("--version", "-V"):
-                    result = tcm.run_in_oss_cad_env(
-                        [exe, flag],
-                        timeout=20,
-                        cwd=os.path.join(root, "bin"),
-                    )
-                    if self._gtkwave_probe_succeeded(
-                        result.returncode, result.stdout, result.stderr
-                    ):
-                        logging.info(
-                            "GTKWave probe OK via environment.bat (%s %s)", exe, flag
-                        )
-                        return True
-                    logging.info(
-                        "GTKWave environment.bat probe rc=%s flag=%s out=%r err=%r",
-                        result.returncode,
-                        flag,
-                        (result.stdout or "")[:300],
-                        (result.stderr or "")[:300],
-                    )
-        except Exception as e:
-            logging.warning("GTKWave environment.bat probe error: %s", e)
-
-        # Fallback: apply env vars in-process (same as environment.bat contents)
-        env = self._gtkwave_run_env(exe)
-        # Reduce noisy/failing win32 session dbus lookups in VMs
-        env.setdefault("GIO_USE_VFS", "local")
         cwd = os.path.dirname(exe)
+
+        # 1) In-process env matching environment.bat (no pixbuf cache rebuild)
+        env = self._gtkwave_run_env(exe)
+        env.setdefault("GIO_USE_VFS", "local")
         for flag in ("--version", "-V"):
             try:
                 result = subprocess.run(
@@ -182,46 +158,65 @@ class SimulationManager(GHDLCommands):
             except Exception as e:
                 logging.warning("GTKWave probe failed (%s %s): %s", exe, flag, e)
 
-        if os.name == "nt":
-            try:
-                result = subprocess.run(
-                    f'"{exe}" --version',
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    env=env,
-                    cwd=cwd,
-                    shell=True,
-                    stdin=subprocess.DEVNULL,
+        # 2) Full environment.bat (includes pixbuf cache update — slower)
+        try:
+            from .toolchain_manager import ToolChainManager
+            tcm = ToolChainManager()
+            root = tcm.get_oss_cad_suite_root()
+            if not root and os.path.basename(cwd).lower() == "bin":
+                root = os.path.dirname(cwd)
+            if root and os.path.isfile(os.path.join(root, "environment.bat")):
+                result = tcm.run_in_oss_cad_env(
+                    [exe, "--version"],
+                    timeout=30,
+                    cwd=os.path.join(root, "bin"),
                 )
                 if self._gtkwave_probe_succeeded(
                     result.returncode, result.stdout, result.stderr
                 ):
-                    logging.info("GTKWave probe OK via shell (%s)", exe)
+                    logging.info("GTKWave probe OK via environment.bat (%s)", exe)
                     return True
-            except Exception as e:
-                logging.warning("GTKWave shell probe failed: %s", e)
+                logging.info(
+                    "GTKWave environment.bat probe rc=%s out=%r err=%r",
+                    result.returncode,
+                    (result.stdout or "")[:300],
+                    (result.stderr or "")[:300],
+                )
+        except Exception as e:
+            logging.warning("GTKWave environment.bat probe error: %s", e)
 
-        # Last resort: binary present next to environment.bat (user-confirmed via start.bat)
+        # 3) Layout trust: bin\gtkwave.exe + environment.bat (start.bat works)
         bat = os.path.join(os.path.dirname(cwd), "environment.bat")
         if os.path.basename(cwd).lower() == "bin" and os.path.isfile(bat) and os.path.isfile(exe):
             logging.warning(
-                "GTKWave probe inconclusive but OSS CAD layout looks valid (%s); "
-                "treating as available",
+                "GTKWave probe inconclusive but OSS CAD layout valid (%s); treating as available",
                 exe,
             )
             return True
         return False
 
     def ensure_gtkwave_direct(self) -> str:
-        """Resolve OSS CAD gtkwave.exe, save as DIRECT, return absolute path or \"\"."""
+        """Resolve OSS CAD gtkwave.exe, save as DIRECT, return absolute path or \"\".
+
+        Suite layout: ``<root>/environment.bat`` and ``<root>/bin/gtkwave.exe``.
+        """
         exe = self._resolve_gtkwave_executable()
         if not exe or not os.path.isfile(exe):
+            try:
+                from .toolchain_manager import ToolChainManager
+                root = ToolChainManager().get_oss_cad_suite_root()
+                if root:
+                    candidate = os.path.join(root, "bin", "gtkwave.exe")
+                    if os.path.isfile(candidate):
+                        exe = candidate
+            except Exception:
+                pass
+        if not exe or not os.path.isfile(exe):
+            logging.warning("ensure_gtkwave_direct: gtkwave.exe not found")
             return ""
         exe = os.path.abspath(exe)
-        if not self._probe_gtkwave(exe):
-            logging.warning("GTKWave resolved at %s but probe failed", exe)
-            # Still save DIRECT path — launch may work even if --version is flaky
+        # Always persist DIRECT — launch uses environment.bat / applied env
+        self._probe_gtkwave(exe)  # log diagnostics; do not block save on probe
         try:
             self.project_config.setdefault("gtkwave_tool_path", {})["gtkwave"] = exe
             self.project_config["gtkwave_preference"] = "DIRECT"

@@ -250,31 +250,81 @@ class ToolChainManager(HierarchyManager):
         Resolution order (no hardcoded install locations):
         1. ``YOSYSHQ_ROOT`` environment variable
         2. Parent of ``bin/`` from a configured tool absolute path
-        3. Parent of ``bin/`` from a tool found on PATH via ``shutil.which``
+           (yosys / nextpnr / gmpack / openfpgaloader / gtkwave)
+        3. Directory containing ``environment.bat`` near a configured tool
+        4. Parent of ``bin/`` from a tool found on PATH via ``shutil.which``
         """
         env_root = os.environ.get("YOSYSHQ_ROOT", "").strip().rstrip("\\/")
         if env_root and os.path.isdir(env_root):
-            return env_root
+            if os.path.isfile(os.path.join(env_root, "environment.bat")) or os.path.isdir(
+                os.path.join(env_root, "bin")
+            ):
+                return env_root
 
         def _root_from_tool_path(tool_path: str) -> str:
             if not tool_path:
                 return ""
-            norm = os.path.normpath(tool_path)
+            norm = os.path.abspath(os.path.normpath(tool_path))
+            if not os.path.exists(norm):
+                return ""
+            # .../bin/tool.exe
             parent = os.path.dirname(norm)
             if os.path.basename(parent).lower() == "bin":
                 root = os.path.dirname(parent)
-                if os.path.isdir(os.path.join(root, "lib")):
+                if os.path.isdir(os.path.join(root, "lib")) or os.path.isfile(
+                    os.path.join(root, "environment.bat")
+                ):
                     return root
+            # Walk parents looking for environment.bat (suite root marker)
+            cur = parent if os.path.isdir(norm) else parent
+            for _ in range(6):
+                if os.path.isfile(os.path.join(cur, "environment.bat")):
+                    return cur
+                nxt = os.path.dirname(cur)
+                if nxt == cur:
+                    break
+                cur = nxt
             return ""
 
-        # Infer from configured Yosys / nextpnr / gmpack paths (.../bin/tool.exe -> root)
-        paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-        for tool in ("yosys", "nextpnr_himbaechel", "gmpack"):
+        paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {}) or {}
+        for tool in (
+            "yosys",
+            "nextpnr_himbaechel",
+            "gmpack",
+            "openfpgaloader",
+            "ghdl",
+        ):
             root = _root_from_tool_path(paths.get(tool, "") or "")
             if root:
                 return root
 
-        # Infer from PATH lookups
+        # GTKWave lives under gtkwave_tool_path (separate config key)
+        gtk = (self.config.get("gtkwave_tool_path") or {}).get("gtkwave", "") or ""
+        root = _root_from_tool_path(gtk)
+        if root:
+            return root
+
+        # Auto-Setup machine defaults
+        try:
+            from .toolchain_autosetup import get_global_toolchain_defaults, load_global_settings
+            defaults = get_global_toolchain_defaults()
+            for key in ("yosys", "gtkwave", "gmpack", "nextpnr_himbaechel", "openfpgaloader"):
+                root = _root_from_tool_path(defaults.get(key, "") or "")
+                if root:
+                    return root
+            block = load_global_settings().get("toolchain_autosetup") or {}
+            for key in ("yosyshq_root", "install_root"):
+                candidate = (block.get(key) or "").strip().rstrip("\\/")
+                if candidate and os.path.isdir(candidate):
+                    # install_root may be parent of oss-cad-suite/
+                    if os.path.isfile(os.path.join(candidate, "environment.bat")):
+                        return candidate
+                    nested = os.path.join(candidate, "oss-cad-suite")
+                    if os.path.isfile(os.path.join(nested, "environment.bat")):
+                        return nested
+        except Exception:
+            pass
+
         for exe_name in (
             "yosys",
             "yosys.exe",
@@ -282,6 +332,8 @@ class ToolChainManager(HierarchyManager):
             "nextpnr-himbaechel.exe",
             "gmpack",
             "gmpack.exe",
+            "gtkwave",
+            "gtkwave.exe",
         ):
             found = shutil.which(exe_name)
             if found:
