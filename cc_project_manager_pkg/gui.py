@@ -40,7 +40,7 @@ from cc_project_manager_pkg import (
     HierarchyManager,
     CreateStructure,
     ToolChainManager,
-    PnRCommands,
+    NextPnRCommands,
     SimulationManager,
     __version__,
 )
@@ -77,7 +77,7 @@ class LogTextWidget(QTextEdit):
     def __init__(self):
         super().__init__()
         self.setReadOnly(True)
-        self.max_lines = 1000  # Limit log history
+        self.max_lines = 8000  # Allow longer multi-seed P&R live streams
         self.current_lines = 0
         
         # Set up colors for different log levels (dark theme compatible)
@@ -261,10 +261,11 @@ class ToolchainPathDialog(QDialog):
         # Tool path inputs
         self.path_inputs = {}
         tools = [
-            ("ghdl", "GHDL", "Path to ghdl.exe (VHDL compiler and analyzer)"),
-            ("yosys", "Yosys", "Path to yosys.exe (HDL synthesizer)"),
-            ("p_r", "P&R", "Path to p_r.exe (Place & Route tool)"),
-            ("openfpgaloader", "openFPGALoader", "Path to openFPGALoader.exe (FPGA programmer)")
+            ("ghdl", "GHDL", "Path to ghdl.exe (standalone VHDL synthesizer)"),
+            ("yosys", "Yosys", "Path to yosys.exe from OSS CAD Suite"),
+            ("nextpnr_himbaechel", "nextpnr-himbaechel", "Path to nextpnr-himbaechel.exe (GateMate P&R)"),
+            ("gmpack", "gmpack", "Path to gmpack.exe (bitstream packer)"),
+            ("openfpgaloader", "openFPGALoader", "Optional: Path to openFPGALoader.exe")
         ]
         
         for tool_key, tool_name, tooltip in tools:
@@ -315,7 +316,7 @@ class ToolchainPathDialog(QDialog):
             "💡 Instructions:\n"
             "• Use 'Browse' to select the executable file for each tool\n"
             "• Use 'Test' to validate that the path works correctly\n"
-            "• Paths must point to the actual .exe files (e.g., ghdl.exe, yosys.exe, p_r.exe, openFPGALoader.exe)\n"
+            "• Paths must point to the actual .exe files (e.g., ghdl.exe, yosys.exe, nextpnr-himbaechel.exe, gmpack.exe)\n"
             "• Leave empty to use PATH environment variable"
         )
         instructions.setWordWrap(True)
@@ -360,7 +361,13 @@ class ToolchainPathDialog(QDialog):
             status_text = f"Current Preference: {preference}\n\n"
             
             # Check each tool
-            tools = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader"}
+            tools = {
+                "GHDL": "ghdl",
+                "Yosys": "yosys",
+                "nextpnr": "nextpnr_himbaechel",
+                "gmpack": "gmpack",
+                "openFPGALoader": "openfpgaloader",
+            }
             
             for tool_name, tool_key in tools.items():
                 status_text += f"{tool_name}:\n"
@@ -394,7 +401,13 @@ class ToolchainPathDialog(QDialog):
     
     def browse_path(self, tool_key):
         """Browse for a tool path."""
-        tool_names = {"ghdl": "GHDL", "yosys": "Yosys", "p_r": "P&R", "openfpgaloader": "openFPGALoader"}
+        tool_names = {
+            "ghdl": "GHDL",
+            "yosys": "Yosys",
+            "nextpnr_himbaechel": "nextpnr-himbaechel",
+            "gmpack": "gmpack",
+            "openfpgaloader": "openFPGALoader",
+        }
         tool_name = tool_names.get(tool_key, tool_key)
         
         file_path, _ = QFileDialog.getOpenFileName(
@@ -410,7 +423,13 @@ class ToolchainPathDialog(QDialog):
     def validate_path(self, tool_key):
         """Validate a tool path."""
         path = self.path_inputs[tool_key].text().strip()
-        tool_names = {"ghdl": "GHDL", "yosys": "Yosys", "p_r": "P&R", "openfpgaloader": "openFPGALoader"}
+        tool_names = {
+            "ghdl": "GHDL",
+            "yosys": "Yosys",
+            "nextpnr_himbaechel": "nextpnr-himbaechel",
+            "gmpack": "gmpack",
+            "openfpgaloader": "openFPGALoader",
+        }
         tool_name = tool_names.get(tool_key, tool_key)
         
         if not path:
@@ -426,7 +445,13 @@ class ToolchainPathDialog(QDialog):
             return
         
         # Check if it's the correct executable
-        expected_names = {"ghdl": "ghdl.exe", "yosys": "yosys.exe", "p_r": "p_r.exe", "openfpgaloader": "openFPGALoader.exe"}
+        expected_names = {
+            "ghdl": "ghdl.exe",
+            "yosys": "yosys.exe",
+            "nextpnr_himbaechel": "nextpnr-himbaechel.exe",
+            "gmpack": "gmpack.exe",
+            "openfpgaloader": "openFPGALoader.exe",
+        }
         expected_name = expected_names.get(tool_key, f"{tool_key}.exe")
         
         if not path.lower().endswith(expected_name.lower()):
@@ -586,7 +611,7 @@ from cc_project_manager_pkg import (
     HierarchyManager,
     CreateStructure,
     ToolChainManager,
-    PnRCommands,
+    NextPnRCommands,
     SimulationManager,
     __version__,
 )
@@ -623,7 +648,7 @@ class LogTextWidget(QTextEdit):
     def __init__(self):
         super().__init__()
         self.setReadOnly(True)
-        self.max_lines = 1000  # Limit log history
+        self.max_lines = 8000  # Allow longer multi-seed P&R live streams
         self.current_lines = 0
         
         # Set up colors for different log levels (dark theme compatible)
@@ -1847,7 +1872,7 @@ class SynthesisStrategyDialog(QDialog):
         self.synth_config = synth_config or {}
         self.setWindowTitle(f"Run Synthesis - {entity_name}")
         self.setModal(True)
-        self.setFixedSize(500, 400)
+        self.resize(640, 560)
         self.init_ui()
     
     def init_ui(self):
@@ -1894,11 +1919,6 @@ class SynthesisStrategyDialog(QDialog):
         self.description_label = QLabel()
         self.description_label.setWordWrap(True)
         self.description_label.setStyleSheet("color: #888888; font-style: italic; padding: 10px;")
-        self.update_description()
-        
-        # Connect signal to update description
-        self.strategy_combo.currentTextChanged.connect(self.update_description)
-        
         strategy_layout.addWidget(self.description_label)
         
         layout.addWidget(strategy_group)
@@ -1908,15 +1928,40 @@ class SynthesisStrategyDialog(QDialog):
         gatemate_layout = QVBoxLayout(gatemate_group)
         
         self.gatemate_checkbox = QCheckBox("Use GateMate FPGA-specific synthesis")
-        self.gatemate_checkbox.setToolTip("Enable GateMate-specific optimizations for better results on Cologne Chip FPGAs")
+        self.gatemate_checkbox.setToolTip(
+            "Cologne Chip recipe: standalone GHDL → Yosys synth_gatemate -luttree -nomx8"
+        )
         
         # Set default from configuration
         default_target = self.synth_config.get('default_target', 'GateMate FPGA')
         self.gatemate_checkbox.setChecked(default_target == 'GateMate FPGA')
         
         gatemate_layout.addWidget(self.gatemate_checkbox)
+
+        recipe_note = QLabel(
+            "GateMate recipe (fixed): synth_gatemate -luttree -nomx8\n"
+            "These flags are part of the correct synthesis recipe and are always applied."
+        )
+        recipe_note.setWordWrap(True)
+        recipe_note.setStyleSheet("color: #90CAF9; font-size: 11px;")
+        gatemate_layout.addWidget(recipe_note)
         
         layout.addWidget(gatemate_group)
+
+        # Command preview (create before signals that refresh it)
+        preview_group = QGroupBox("Command Preview")
+        preview_layout = QVBoxLayout(preview_group)
+        self.command_preview = QTextEdit()
+        self.command_preview.setReadOnly(True)
+        self.command_preview.setMinimumHeight(140)
+        self.command_preview.setFont(QFont("Consolas", 9))
+        preview_layout.addWidget(self.command_preview)
+        layout.addWidget(preview_group)
+
+        # Connect signals after widgets exist
+        self.strategy_combo.currentTextChanged.connect(self.update_description)
+        self.gatemate_checkbox.stateChanged.connect(self._refresh_command_preview)
+        self.update_description()
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -1945,6 +1990,33 @@ class SynthesisStrategyDialog(QDialog):
         if current_strategy in self.strategies:
             description = self.strategies[current_strategy]
             self.description_label.setText(f"Description: {description}")
+        self._refresh_command_preview()
+
+    def _refresh_command_preview(self):
+        """Show the exact GHDL / Yosys commands that will run."""
+        if not hasattr(self, "command_preview") or self.command_preview is None:
+            return
+        try:
+            from cc_project_manager_pkg.yosys_commands import YosysCommands
+            yosys = YosysCommands(strategy=self.strategy_combo.currentData() or "balanced")
+            preview = yosys.build_gatemate_command_preview(self.entity_name)
+            if not self.gatemate_checkbox.isChecked():
+                text = (
+                    "Generic (non-GateMate) synthesis selected.\n"
+                    "GateMate FPGA synthesis is recommended.\n\n"
+                    f"GateMate preview for reference:\n{preview.get('combined', '')}"
+                )
+            else:
+                text = preview.get("combined", "Command preview unavailable")
+            self.command_preview.setPlainText(text)
+        except Exception as e:
+            self.command_preview.setPlainText(
+                f"Command preview unavailable: {e}\n\n"
+                f"Expected GateMate Yosys stage:\n"
+                f"yosys -p \"read_verilog <entity>_synth.v; "
+                f"synth_gatemate -top {self.entity_name} -luttree -nomx8 "
+                f"-json <entity>_synth.json; write_verilog -noattr ...\""
+            )
     
     def _load_synthesis_strategies(self):
         """Load synthesis strategies from synthesis_options.yml file.
@@ -2574,6 +2646,7 @@ class MainWindow(QMainWindow):
     """Main application window."""
 
     upload_progress_update = pyqtSignal(str)
+    pnr_seed_progress = pyqtSignal(object)
     DEFAULT_AUTO_SCAN_INTERVAL_SECONDS = 5
     MIN_AUTO_SCAN_INTERVAL_SECONDS = 5
     
@@ -2581,9 +2654,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.init_ui()
         self.upload_progress_update.connect(self._update_upload_progress)
+        self.pnr_seed_progress.connect(self._on_pnr_seed_progress)
         self.setup_logging()
         self.current_project_path = None
         self.worker_thread = None
+        self._multi_seed_dialog = None
         self._known_constraint_files = set()
         self._auto_scan_in_progress = False
         self._setup_auto_folder_scan_timer()
@@ -3263,12 +3338,11 @@ class MainWindow(QMainWindow):
         
         buttons = [
             ("FPGA Board Selection", self.open_board_selection_dialog, "Select and configure FPGA board for programming"),
-            ("Add Custom Board", self.open_add_custom_board_dialog, "Add a new custom board configuration"),
             ("Program SRAM", self.program_sram, "Program bitstream to FPGA SRAM (volatile)"),
             ("Program Flash", self.program_flash, "Program bitstream to FPGA Flash (non-volatile)"),
             ("Detect Devices", self.detect_fpga_devices, "Detect connected FPGA devices and cables"),
             ("Verify Bitstream", self.verify_bitstream, "Verify programmed bitstream against file"),
-            ("View Upload Logs", self.view_upload_logs, "View openFPGALoader log files and programming history")
+            ("View Upload Logs", self.view_upload_logs, "View programming log files and history")
         ]
         
         # Store references to programming buttons for dynamic enabling/disabling
@@ -3367,7 +3441,7 @@ class MainWindow(QMainWindow):
         
         # Create status labels and preference dropdowns for each tool
         self.tool_status_labels = {}
-        tools = ["GHDL", "Yosys", "P&R", "openFPGALoader", "GTKWave"]
+        tools = ["GHDL", "Yosys", "nextpnr", "gmpack", "openFPGALoader", "GTKWave"]
         
         for tool in tools:
             tool_frame = QFrame()
@@ -3450,7 +3524,7 @@ class MainWindow(QMainWindow):
         advanced_title.setFont(QFont("Arial", 10, QFont.Bold))
         advanced_layout.addWidget(advanced_title)
         
-        self.ghdl_yosys_label = QLabel("GHDL-Yosys Plugin: Checking...")
+        self.ghdl_yosys_label = QLabel("GateMate synth flow: Checking...")
         advanced_layout.addWidget(self.ghdl_yosys_label)
         
         status_layout.addWidget(advanced_frame)
@@ -3473,7 +3547,14 @@ class MainWindow(QMainWindow):
             tcm = ToolChainManager()
             
             # Map display names to internal tool names
-            tool_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader", "GTKWave": "gtkwave"}
+            tool_map = {
+                "GHDL": "ghdl",
+                "Yosys": "yosys",
+                "nextpnr": "nextpnr_himbaechel",
+                "gmpack": "gmpack",
+                "openFPGALoader": "openfpgaloader",
+                "GTKWave": "gtkwave",
+            }
             internal_tool_name = tool_map.get(tool_name)
             
             if internal_tool_name:
@@ -3506,7 +3587,14 @@ class MainWindow(QMainWindow):
                 
                 # Update dropdown values with smart defaults and current preferences
                 if hasattr(self, 'tool_preference_dropdowns'):
-                    tool_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader", "GTKWave": "gtkwave"}
+                    tool_map = {
+                "GHDL": "ghdl",
+                "Yosys": "yosys",
+                "nextpnr": "nextpnr_himbaechel",
+                "gmpack": "gmpack",
+                "openFPGALoader": "openfpgaloader",
+                "GTKWave": "gtkwave",
+            }
                     for tool_name, dropdown in self.tool_preference_dropdowns.items():
                         internal_name = tool_map.get(tool_name)
                         if internal_name and tool_name != "GTKWave":  # Handle GTKWave separately below
@@ -3593,8 +3681,32 @@ class MainWindow(QMainWindow):
                 legacy_preference = tcm.config.get("cologne_chip_gatemate_toolchain_preference", "MIXED")
                 
                 # Check individual tools status
-                tools_map = {"GHDL": "ghdl", "Yosys": "yosys", "P&R": "p_r", "openFPGALoader": "openfpgaloader"}
+                tools_map = {
+                    "GHDL": "ghdl",
+                    "Yosys": "yosys",
+                    "nextpnr": "nextpnr_himbaechel",
+                    "gmpack": "gmpack",
+                    "openFPGALoader": "openfpgaloader",
+                }
                 
+                def _short_version(raw: str) -> str:
+                    """Compress probe banner text for the status row."""
+                    if not raw:
+                        return ""
+                    text = " ".join(raw.strip().split())
+                    # Prefer parenthesized Version ... when present (nextpnr)
+                    import re
+                    m = re.search(r"\(Version\s+([^)]+)\)", text, re.IGNORECASE)
+                    if m:
+                        return m.group(1).strip()
+                    m = re.search(r"Version\s+(\S+)", text, re.IGNORECASE)
+                    if m:
+                        return m.group(1).strip()
+                    # Keep first token cluster for GHDL/Yosys style banners
+                    if len(text) > 72:
+                        return text[:69] + "..."
+                    return text
+
                 for tool_name, tool_key in tools_map.items():
                     labels = self.tool_status_labels[tool_name]
                     
@@ -3622,20 +3734,32 @@ class MainWindow(QMainWindow):
                         labels['direct'].setText("DIRECT: ⚠️ Not configured")
                         labels['direct'].setStyleSheet("color: #FF9800;")
                         labels['direct'].setToolTip("")
+
+                    version_raw = ""
+                    try:
+                        version_raw = tcm.get_tool_version_string(tool_key) or ""
+                    except Exception:
+                        version_raw = ""
+                    version_short = _short_version(version_raw)
+                    version_suffix = f" — {version_short}" if version_short else ""
+                    if version_raw:
+                        labels['status'].setToolTip(version_raw)
+                    else:
+                        labels['status'].setToolTip("")
                     
                     # Overall tool status based on current preference
                     current_pref = tcm.get_tool_preference(tool_key)
                     if current_pref == "PATH" and path_available:
-                        labels['status'].setText("STATUS: ✅ READY (using PATH)")
+                        labels['status'].setText(f"STATUS: ✅ READY (PATH){version_suffix}")
                         labels['status'].setStyleSheet("color: #4CAF50;")
                     elif current_pref == "DIRECT" and direct_available:
-                        labels['status'].setText("STATUS: ✅ READY (using DIRECT)")
+                        labels['status'].setText(f"STATUS: ✅ READY (DIRECT){version_suffix}")
                         labels['status'].setStyleSheet("color: #4CAF50;")
                     elif current_pref == "PATH" and not path_available and direct_available:
-                        labels['status'].setText("STATUS: ⚠️ PATH not available, DIRECT ready")
+                        labels['status'].setText(f"STATUS: ⚠️ PATH unavailable, DIRECT ready{version_suffix}")
                         labels['status'].setStyleSheet("color: #FF9800;")
                     elif current_pref == "DIRECT" and not direct_available and path_available:
-                        labels['status'].setText("STATUS: ⚠️ DIRECT not configured, PATH available")
+                        labels['status'].setText(f"STATUS: ⚠️ DIRECT missing, PATH available{version_suffix}")
                         labels['status'].setStyleSheet("color: #FF9800;")
                     elif current_pref == "PATH" and not path_available:
                         labels['status'].setText("STATUS: ❌ PATH not available")
@@ -3712,17 +3836,19 @@ class MainWindow(QMainWindow):
                     gtkwave_labels['status'].setStyleSheet("color: #F44336;")
                     logging.warning(f"Failed to check GTKWave status: {e}")
                 
-                # Check GHDL-Yosys plugin
+                # Check GateMate synthesis flow (standalone GHDL + Yosys synth_gatemate)
                 try:
-                    ghdl_yosys_ok = tcm.check_ghdl_yosys_link()
-                    if ghdl_yosys_ok:
-                        self.ghdl_yosys_label.setText("GHDL-Yosys Plugin: ✅ Available")
+                    flow = tcm.check_gatemate_synth_flow_status()
+                    self.ghdl_yosys_label.setText(flow.get("message", "GateMate synth flow: unknown"))
+                    self.ghdl_yosys_label.setToolTip(flow.get("detail", ""))
+                    if flow.get("ok"):
                         self.ghdl_yosys_label.setStyleSheet("color: #4CAF50;")
-                    else:
-                        self.ghdl_yosys_label.setText("GHDL-Yosys Plugin: ⚠️ Not working properly")
+                    elif flow.get("ghdl_ok") or flow.get("yosys_ok"):
                         self.ghdl_yosys_label.setStyleSheet("color: #FF9800;")
+                    else:
+                        self.ghdl_yosys_label.setStyleSheet("color: #F44336;")
                 except Exception:
-                    self.ghdl_yosys_label.setText("GHDL-Yosys Plugin: ❌ Check failed")
+                    self.ghdl_yosys_label.setText("GateMate synth flow: ❌ Check failed")
                     self.ghdl_yosys_label.setStyleSheet("color: #F44336;")
                 
 
@@ -5000,7 +5126,12 @@ class MainWindow(QMainWindow):
                 entities_item.setForeground(0, QColor("#ffffff"))
                 entities_item.setForeground(1, QColor("#64b5f6"))
                 
-                for entity, entity_type in available_entities.items():
+                for unique_key, meta in available_entities.items():
+                    entity = meta["entity"]
+                    entity_type = meta["type"]
+                    display_name = meta["display"]
+                    source_file = meta["file_path"]
+
                     # Check if this entity has been synthesized
                     is_synthesized = entity in synthesized_designs
                     status = "✅ Synthesized" if is_synthesized else "⚪ Not synthesized"
@@ -5027,7 +5158,7 @@ class MainWindow(QMainWindow):
                             strategy += " (GateMate)"
                         timestamp = synthesis_results[entity].get('timestamp', '')
                     
-                    entity_item = QTreeWidgetItem([entity, entity_type, synthesizable_icon, status, strategy, timestamp])
+                    entity_item = QTreeWidgetItem([display_name, entity_type, synthesizable_icon, status, strategy, timestamp])
                     entity_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
                     entity_item.setForeground(0, QColor("#ffffff"))
                     entity_item.setForeground(1, QColor(type_color))
@@ -5036,8 +5167,13 @@ class MainWindow(QMainWindow):
                     entity_item.setForeground(4, QColor("#64b5f6" if strategy else "#888888"))
                     entity_item.setForeground(5, QColor("#FFA726" if timestamp else "#888888"))
                     
-                    # Store entity metadata
-                    entity_item.setData(0, Qt.UserRole, {"entity_name": entity, "is_synthesized": is_synthesized})
+                    # Store entity metadata (entity name + source file for duplicate disambiguation)
+                    entity_item.setData(0, Qt.UserRole, {
+                        "entity_name": entity,
+                        "source_file": source_file,
+                        "unique_key": unique_key,
+                        "is_synthesized": is_synthesized,
+                    })
                     
                     entities_item.addChild(entity_item)
                 
@@ -5098,8 +5234,10 @@ class MainWindow(QMainWindow):
             
             # Update statistics
             # Count only synthesizable entities (Source and Top, not Testbench)
-            synthesizable_count = sum(1 for entity, entity_type in available_entities.items() 
-                                    if entity_type in ['Source', 'Top'])
+            synthesizable_count = sum(
+                1 for meta in available_entities.values()
+                if isinstance(meta, dict) and meta.get("type") in ['Source', 'Top']
+            )
             self.synth_stats_labels['available_entities'].setText(str(synthesizable_count))
             self.synth_stats_labels['synthesized_designs'].setText(str(synthesized_count))
             
@@ -5189,29 +5327,30 @@ class MainWindow(QMainWindow):
                 
                 synthesized_designs = {}
                 
-                # Look for synthesis output files (.v, .json)
+                # Look for GateMate JSON netlists required by nextpnr-himbaechel.
+                # A lone *_synth.v (GHDL stage only) is not enough for Place & Route.
                 for file_name in os.listdir(synth_dir):
-                    if file_name.endswith(('_synth.v', '_synth.json')):
-                        # Extract design name
-                        if file_name.endswith('_synth.v'):
-                            design_name = file_name[:-8]  # Remove '_synth.v'
-                        else:
-                            design_name = file_name[:-11]  # Remove '_synth.json'
-                        
-                        if design_name not in synthesized_designs:
-                            synthesized_designs[design_name] = {'files': [], 'timestamp': None}
-                        
-                        file_path = os.path.join(synth_dir, file_name)
-                        synthesized_designs[design_name]['files'].append(file_path)
-                        
-                        # Get file modification time as fallback timestamp
-                        if synthesized_designs[design_name]['timestamp'] is None:
-                            try:
-                                import time
-                                mtime = os.path.getmtime(file_path)
-                                synthesized_designs[design_name]['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime))
-                            except:
-                                synthesized_designs[design_name]['timestamp'] = "Unknown"
+                    if not file_name.endswith('_synth.json'):
+                        continue
+                    design_name = file_name[:-11]  # Remove '_synth.json'
+                    if design_name not in synthesized_designs:
+                        synthesized_designs[design_name] = {'files': [], 'timestamp': None}
+                    
+                    file_path = os.path.join(synth_dir, file_name)
+                    synthesized_designs[design_name]['files'].append(file_path)
+                    
+                    # Also note companion Verilog if present
+                    v_path = os.path.join(synth_dir, f"{design_name}_synth.v")
+                    if os.path.exists(v_path):
+                        synthesized_designs[design_name]['files'].append(v_path)
+                    
+                    if synthesized_designs[design_name]['timestamp'] is None:
+                        try:
+                            import time
+                            mtime = os.path.getmtime(file_path)
+                            synthesized_designs[design_name]['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime))
+                        except Exception:
+                            synthesized_designs[design_name]['timestamp'] = "Unknown"
                 
                 return synthesized_designs
                 
@@ -5756,6 +5895,22 @@ class MainWindow(QMainWindow):
     def on_operation_finished(self, success: bool, message: str):
         """Handle completion of worker thread operation."""
         self.status_bar.showMessage("Ready")
+
+        # Close / unlock multi-seed progress dialog if present
+        if self._multi_seed_dialog is not None:
+            try:
+                if not success:
+                    self.pnr_seed_progress.emit(
+                        {
+                            "event": "multi_seed_done",
+                            "success": False,
+                            "error": message,
+                            "results": [],
+                        }
+                    )
+                self._multi_seed_dialog.close_btn.setEnabled(True)
+            except Exception:
+                pass
         
         # Stop upload activity indicator if it was running
         if hasattr(self, 'upload_in_progress') and self.upload_in_progress:
@@ -6120,10 +6275,10 @@ class MainWindow(QMainWindow):
                     logging.info(f"Changed working directory to: {os.getcwd()}")
                     
                     try:
-                        from cc_project_manager_pkg.pnr_commands import PnRCommands
+                        from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
                         
                         # Initialize PnRCommands to get constraints directory
-                        pnr = PnRCommands()
+                        pnr = NextPnRCommands()
                         constraints_dir = pnr.constraints_dir
                         
                         logging.info(f"Constraints directory: {constraints_dir}")
@@ -6244,7 +6399,7 @@ class MainWindow(QMainWindow):
             try:
                 logging.info(f"🗑️ Removing constraints file '{file_name}' from project...")
                 
-                from cc_project_manager_pkg.pnr_commands import PnRCommands
+                from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
                 
                 # Find project configuration
                 project_config_path, project_dir = self.find_project_config()
@@ -6262,7 +6417,7 @@ class MainWindow(QMainWindow):
                 
                 try:
                     # Initialize PnRCommands to get constraints directory
-                    pnr = PnRCommands()
+                    pnr = NextPnRCommands()
                     constraints_dir = pnr.constraints_dir
                     
                     logging.info(f"Constraints directory: {constraints_dir}")
@@ -6330,67 +6485,26 @@ class MainWindow(QMainWindow):
         logging.info("Opening project manager logs...")
         
         try:
-            # Get the project manager log file path
-            # The log file is typically in the project root or logs directory
-            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
-            hierarchy = HierarchyManager()
-            
-            if not hierarchy.config_path or not os.path.exists(hierarchy.config_path):
-                self.show_message("Error", "No project configuration found. Please create or load a project first.", "error")
-                return
-            
-            # Load project configuration to find log directory
-            import yaml
-            with open(hierarchy.config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            # Look for project manager log file
-            project_log_path = None
-            
-            # Check common log file locations
-            project_root = os.path.dirname(hierarchy.config_path)
-            possible_log_paths = [
-                os.path.join(project_root, "logs", "project_manager.log"),
-                os.path.join(project_root, "project_manager.log"),
-                os.path.join(project_root, "logs", "cc_project_manager.log"),
-                os.path.join(project_root, "cc_project_manager.log")
-            ]
-            
-            # Also check logs section in config (nested structure)
-            logs_section = config.get("logs", {})
-            if isinstance(logs_section, dict):
-                for log_category, log_files in logs_section.items():
-                    if isinstance(log_files, dict) and ("project" in log_category.lower() or "manager" in log_category.lower()):
-                        # Look for project manager log files in the nested structure
-                        for log_filename, log_path in log_files.items():
-                            if isinstance(log_path, str) and ("project" in log_filename.lower() or "manager" in log_filename.lower()):
-                                if os.path.exists(log_path):
-                                    possible_log_paths.insert(0, log_path)  # Prioritize config-specified paths
-            
-            # Find the first existing log file
-            for log_path in possible_log_paths:
-                if os.path.exists(log_path):
-                    project_log_path = log_path
-                    break
-            
+            project_log_path = self._resolve_project_log_file(
+                "project_manager.log", config_section="project_manager"
+            )
             if not project_log_path:
-                self.show_message("Info", 
+                project_log_path = self._resolve_project_log_file("cc_project_manager.log")
+
+            if not project_log_path:
+                self.show_message(
+                    "Info",
                     "No project manager logs found yet.\n\n"
-                    "Project logs will be available after performing project operations.\n"
-                    "The logs contain detailed output from project management including:\n"
-                    "• Project creation and loading operations\n"
-                    "• File addition and removal activities\n"
-                    "• Configuration changes and updates\n"
-                    "• Error messages and warnings\n"
-                    "• Project structure modifications", "info")
+                    "Logs will appear after project operations run.",
+                    "info",
+                )
                 return
             
-            # Create and show log viewer dialog
             self._show_project_log_dialog(project_log_path)
             
         except Exception as e:
-            logging.error(f"Error accessing project logs: {e}")
-            self.show_message("Error", f"Error accessing project logs: {str(e)}", "error")
+            logging.error(f"Error opening project logs: {e}")
+            self.show_message("Error", f"Failed to open project logs: {str(e)}", "error")
 
     def _show_project_log_dialog(self, log_file_path):
         """Show project log viewer dialog."""
@@ -6723,6 +6837,61 @@ class MainWindow(QMainWindow):
         if original_cwd is not None:
             os.chdir(original_cwd)
 
+    def _resolve_project_log_file(self, log_filename, config_section=None):
+        """Resolve a project log file using the active project, with filesystem fallback.
+
+        Args:
+            log_filename: e.g. ``yosys_commands.log``
+            config_section: Optional ``config['logs']`` subsection name
+                (e.g. ``yosys_commands``, ``pnr_commands``).
+
+        Returns:
+            Absolute path if the log exists, otherwise None.
+        """
+        project_config_path, project_dir = self.find_project_config()
+        if not project_config_path:
+            return None
+
+        try:
+            import yaml
+            with open(project_config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+        except Exception as e:
+            logging.debug(f"Could not load project config for log lookup: {e}")
+            config = {}
+
+        candidates = []
+
+        if config_section:
+            section = config.get("logs", {}).get(config_section, {})
+            if isinstance(section, dict):
+                configured = section.get(log_filename)
+                if configured:
+                    candidates.append(configured)
+
+        logs_dirs = config.get("project_structure", {}).get("logs", [])
+        if logs_dirs:
+            logs_dir = logs_dirs[0] if isinstance(logs_dirs, list) else logs_dirs
+            candidates.append(os.path.join(logs_dir, log_filename))
+
+        candidates.append(os.path.join(project_dir, "logs", log_filename))
+
+        # Also check config/ sibling when config lives in config/
+        if os.path.basename(os.path.dirname(project_config_path)) == "config":
+            candidates.insert(
+                0 if not candidates else len(candidates),
+                os.path.join(os.path.dirname(project_config_path), "..", "logs", log_filename),
+            )
+
+        for path in candidates:
+            if not path:
+                continue
+            normalized = os.path.normpath(path)
+            if os.path.exists(normalized):
+                return normalized
+
+        return None
+
     def load_existing_project(self):
         """Load an existing project from a directory."""
         logging.info("📁 Opening project directory selection dialog to load existing project...")
@@ -6844,8 +7013,12 @@ class MainWindow(QMainWindow):
                             "warning")
             return
         
-        entity_name = selected_item.text(0)
+        entity_meta = selected_item.data(0, Qt.UserRole) or {}
+        entity_name = entity_meta.get("entity_name") or selected_item.text(0).split(" (")[0]
+        source_file = entity_meta.get("source_file")
         logging.info(f"🔄 Opening synthesis dialog for entity: {entity_name}")
+        if source_file:
+            logging.info(f"📄 Selected source file: {source_file}")
         
         # Get current synthesis configuration
         try:
@@ -6859,17 +7032,23 @@ class MainWindow(QMainWindow):
             synthesis_params = dialog.get_synthesis_params()
             
             def synthesis_operation():
+                project_config_path, project_dir = self.find_project_config()
+                original_cwd = os.getcwd()
                 try:
+                    if project_dir and os.path.normpath(project_dir) != os.path.normpath(original_cwd):
+                        os.chdir(project_dir)
+                        logging.info(f"Changed working directory to project: {project_dir}")
+
                     # Enhanced logging with comprehensive synthesis information
                     logging.info("=" * 80)
                     logging.info("🔄 SYNTHESIS OPERATION STARTED")
                     logging.info("=" * 80)
                     
-                    # Find source file for the entity
-                    source_file = self._find_entity_source_file(entity_name)
-                    if source_file:
+                    # Prefer the file selected in the tree (disambiguates duplicate entities)
+                    resolved_source = source_file or self._find_entity_source_file(entity_name)
+                    if resolved_source:
                         logging.info(f"📁 Entity: {entity_name}")
-                        logging.info(f"📄 Source File: {source_file}")
+                        logging.info(f"📄 Source File: {resolved_source}")
                     else:
                         logging.warning(f"⚠️  Entity: {entity_name} (source file not found)")
                     
@@ -6936,8 +7115,12 @@ class MainWindow(QMainWindow):
                     logging.info("🚀 EXECUTING SYNTHESIS...")
                     
                     if synthesis_params['use_gatemate']:
-                        logging.info("   Using GateMate-specific synthesis flow")
-                        success = yosys.synthesize_gatemate(entity_name, options=custom_yosys_options)
+                        logging.info("   Using GateMate-specific synthesis flow (GHDL -> Yosys JSON)")
+                        success = yosys.synthesize_gatemate(
+                            entity_name,
+                            options=custom_yosys_options,
+                            primary_file=resolved_source,
+                        )
                     else:
                         logging.info("   Using generic synthesis flow")
                         success = yosys.synthesize(entity_name, options=custom_yosys_options)
@@ -7028,6 +7211,9 @@ class MainWindow(QMainWindow):
                     logging.error(f"   Error: {e}")
                     logging.info("=" * 80)
                     raise e
+                finally:
+                    if os.path.normpath(os.getcwd()) != os.path.normpath(original_cwd):
+                        os.chdir(original_cwd)
             
             self.run_in_thread(synthesis_operation, success_msg="Synthesis completed successfully")
     
@@ -7260,39 +7446,21 @@ class MainWindow(QMainWindow):
         logging.info("Opening synthesis logs...")
         
         try:
-            # Get the synthesis log file path from project configuration
-            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
-            hierarchy = HierarchyManager()
+            yosys_log_path = self._resolve_project_log_file(
+                "yosys_commands.log", config_section="yosys_commands"
+            )
             
-            if not hierarchy.config_path or not os.path.exists(hierarchy.config_path):
-                self.show_message("Error", "No project configuration found. Please create or load a project first.", "error")
-                return
-            
-            # Load project configuration
-            import yaml
-            with open(hierarchy.config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            # Get yosys log file path
-            yosys_log_path = None
-            logs_section = config.get("logs", {})
-            yosys_commands = logs_section.get("yosys_commands", {})
-            
-            if isinstance(yosys_commands, dict):
-                yosys_log_path = yosys_commands.get("yosys_commands.log")
-            
-            if not yosys_log_path or not os.path.exists(yosys_log_path):
+            if not yosys_log_path:
                 self.show_message("Info", 
                     "No synthesis logs found yet.\n\n"
                     "Synthesis logs will be available after running synthesis operations.\n"
-                    "The logs contain detailed output from Yosys including:\n"
-                    "• Analysis and elaboration results\n"
-                    "• Synthesis strategy execution\n"
+                    "The logs contain detailed output from GHDL and Yosys including:\n"
+                    "• VHDL to Verilog synthesis\n"
+                    "• GateMate synthesis strategy execution\n"
                     "• Resource utilization reports\n"
                     "• Error messages and warnings", "info")
                 return
             
-            # Create and show log viewer dialog
             self._show_synthesis_log_dialog(yosys_log_path)
             
         except Exception as e:
@@ -7600,17 +7768,25 @@ class MainWindow(QMainWindow):
                 
             logging.info(f"📁 Design for implementation: {design_name}")
             
-            # Show implementation strategy dialog
-            dialog = ImplementationStrategyDialog(self, design_name)
+            # Show Place & Route settings dialog (nextpnr-himbaechel)
+            from cc_project_manager_pkg.place_and_route_dialog import PlaceAndRouteSettingsDialog
+            dialog = PlaceAndRouteSettingsDialog(self, design_name)
             if dialog.exec_() != QDialog.Accepted:
                 logging.info("❌ Implementation cancelled by user")
                 return
             
             impl_params = dialog.get_implementation_params()
             logging.info(f"🔧 Implementation parameters: {impl_params}")
+
+            # Open live multi-seed progress window when iterating
+            if (impl_params.get("seed_mode") or "").lower() == "multi":
+                self._open_multi_seed_progress_dialog(
+                    design_name,
+                    int(impl_params.get("iterations") or 20),
+                )
             
             # Store constraint file mapping for this design
-            constraint_file = impl_params['constraint_file']
+            constraint_file = impl_params.get('constraint_file')
             if constraint_file and constraint_file != "default" and constraint_file != "none":
                 self.design_constraint_mapping[design_name] = constraint_file
             else:
@@ -7620,8 +7796,8 @@ class MainWindow(QMainWindow):
                     logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                     os.chdir(project_dir)
                 
-                from cc_project_manager_pkg.pnr_commands import PnRCommands
-                pnr_temp = PnRCommands()
+                from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                pnr_temp = NextPnRCommands()
                 resolved_path, _, _ = pnr_temp.resolve_constraint_file(design_name=design_name)
                 if resolved_path:
                     self.design_constraint_mapping[design_name] = os.path.basename(resolved_path)
@@ -7630,14 +7806,14 @@ class MainWindow(QMainWindow):
             
             def _log_constraint_error_to_impl_log(pnr, error_message):
                 """Write constraint validation errors to the implementation log."""
-                pnr.pnr_logger.error(error_message)
-                for handler in pnr.pnr_logger.handlers:
+                pnr.nextpnr_logger.error(error_message)
+                for handler in pnr.nextpnr_logger.handlers:
                     handler.flush()
                 try:
                     import datetime
                     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
                     log_entry = f"{timestamp} - ERROR - {error_message}\n"
-                    impl_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
+                    impl_log_path = os.path.join(pnr.impl_logs_dir, "nextpnr_commands.log")
                     with open(impl_log_path, 'a', encoding='utf-8') as f:
                         f.write(log_entry)
                         f.flush()
@@ -7650,11 +7826,13 @@ class MainWindow(QMainWindow):
                     logging.info("🔄 IMPLEMENTATION OPERATION STARTED")
                     logging.info("=" * 80)
                     logging.info(f"📁 Design: {design_name}")
-                    logging.info(f"🎯 Strategy: {impl_params['strategy']}")
-                    logging.info(f"📄 Constraint File: {impl_params['constraint_file']}")
-                    logging.info(f"💾 Generate Bitstream: {impl_params['generate_bitstream']}")
-                    logging.info(f"⏱️  Run Timing Analysis: {impl_params['run_timing_analysis']}")
-                    logging.info(f"📄 Generate Netlist: {impl_params['generate_sim_netlist']}")
+                    logging.info(f"🎯 Preset: {impl_params.get('preset')}")
+                    logging.info(f"📄 Constraint File: {impl_params.get('constraint_file')}")
+                    logging.info(f"💾 Generate Bitstream: {impl_params.get('generate_bitstream')}")
+                    logging.info(
+                        f"🌱 Seed mode: {impl_params.get('seed_mode')} "
+                        f"(fixed={impl_params.get('fixed_seed')}, iterations={impl_params.get('iterations')})"
+                    )
                     
                     # Ensure we're in the correct project directory
                     project_config_path, project_dir = self.find_project_config()
@@ -7662,14 +7840,16 @@ class MainWindow(QMainWindow):
                         logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                         os.chdir(project_dir)
                     
-                    from cc_project_manager_pkg.pnr_commands import PnRCommands
-                    pnr = PnRCommands(strategy=impl_params['strategy'])
+                    from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                    pnr = NextPnRCommands(
+                        strategy=impl_params.get('strategy', 'balanced'),
+                        device=impl_params.get('device', 'CCGM1A1'),
+                    )
+                    pnr.set_progress_callback(lambda info: self.pnr_seed_progress.emit(info))
                     
-                    # Set constraint file if specified
-                    constraint_file = impl_params['constraint_file']
+                    constraint_file = impl_params.get('constraint_file')
                     if constraint_file and constraint_file != "default" and constraint_file != "none":
                         logging.info(f"🔗 Using specified constraint file: {constraint_file}")
-                        # The constraint file selection will be passed to the PnR tool
                     else:
                         logging.info("🔗 Using default constraint file detection")
                     
@@ -7681,96 +7861,50 @@ class MainWindow(QMainWindow):
                         _log_constraint_error_to_impl_log(pnr, constraint_error)
                         raise Exception(constraint_error)
                     
-                    if impl_params['generate_bitstream'] and impl_params['run_timing_analysis'] and impl_params['generate_sim_netlist']:
-                        # Run full implementation flow
-                        logging.info("🚀 Running full implementation flow...")
-                        
-                        # Determine constraint file to use
-                        constraint_file_param = None
-                        if constraint_file and constraint_file != "default" and constraint_file != "none":
-                            constraint_file_param = os.path.join(pnr.constraints_dir, constraint_file)
-                            logging.info(f"🔗 Using specified constraint file: {constraint_file}")
-                        elif constraint_file == "default":
-                            logging.info("🔍 Using auto-detection for constraint file (will use default or first available .ccf)")
-                        # If constraint_file is "default", leave constraint_file_param as None to enable auto-detection
-                        
+                    constraint_file_param = None
+                    if constraint_file and constraint_file != "default" and constraint_file != "none":
+                        constraint_file_param = os.path.join(pnr.constraints_dir, constraint_file)
+                    elif constraint_file == "default":
+                        logging.info("🔍 Using auto-detection for constraint file")
+
+                    if impl_params.get('generate_bitstream', True):
+                        logging.info("🚀 Running place & route + gmpack bitstream...")
                         success = pnr.full_implementation_flow(
                             design_name,
                             constraint_file=constraint_file_param,
-                            generate_bitstream=impl_params['generate_bitstream'],
-                            run_timing_analysis=impl_params['run_timing_analysis'],
-                            generate_sim_netlist=impl_params['generate_sim_netlist'],
-                            sim_netlist_format="vhdl"
+                            settings=impl_params,
+                            generate_bitstream=True,
+                            run_timing_analysis=impl_params.get('run_timing_analysis', False),
+                            generate_sim_netlist=impl_params.get('generate_sim_netlist', False),
                         )
-                        
                         if success:
                             logging.info("✅ Full implementation flow completed successfully")
                             return f"Full implementation completed successfully for {design_name}"
-                        else:
-                            raise Exception(f"Full implementation flow failed for {design_name}")
-                    else:
-                        # Run place and route only
-                        logging.info("🔧 Running place and route only...")
-                        
-                        # Determine constraint file to use
-                        constraint_file_param = None
-                        if constraint_file and constraint_file != "default" and constraint_file != "none":
-                            constraint_file_param = os.path.join(pnr.constraints_dir, constraint_file)
-                            logging.info(f"🔗 Using specified constraint file: {constraint_file}")
-                        elif constraint_file == "default":
-                            logging.info("🔍 Using auto-detection for constraint file (will use default or first available .ccf)")
-                        # If constraint_file is "default", leave constraint_file_param as None to enable auto-detection
-                        
-                        logging.info(f"🔄 Calling pnr.place_and_route(design_name='{design_name}', constraint_file={constraint_file_param})")
-                        success = pnr.place_and_route(design_name, constraint_file=constraint_file_param)
-                        logging.info(f"🔍 DEBUG - place_and_route returned: {success}")
-                        
-                        if success:
-                            logging.info("✅ Place and route completed successfully")
-                            return f"Place and route completed successfully for {design_name}"
-                        else:
-                            resolved_path, _, _ = pnr.resolve_constraint_file(
-                                constraint_file=constraint_file_param,
-                                design_name=design_name,
-                            )
-                            constraint_used = os.path.basename(resolved_path) if resolved_path else "none"
-                            
-                            # Check if it's a constraint file issue by looking at recent PnR logs
-                            try:
-                                pnr_log_path = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
-                                if os.path.exists(pnr_log_path):
-                                    with open(pnr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        lines = f.readlines()
-                                        recent_lines = lines[-50:] if len(lines) > 50 else lines
-                                        recent_log = ''.join(recent_lines)
-                                        
-                                        if "CONSTRAINT FILE REQUIRED" in recent_log:
-                                            raise Exception(
-                                                "❌ CONSTRAINT FILE REQUIRED\n\n"
-                                                "No constraint file was found for Place and Route.\n"
-                                                "Select or create a .ccf file with pin assignments."
-                                            )
-                                        elif "Specified constraint file not found" in recent_log:
-                                            raise Exception(
-                                                "❌ CONSTRAINT FILE NOT FOUND\n\n"
-                                                "The selected constraint file could not be found."
-                                            )
-                                        elif "SYNTHESIS NETLIST REQUIRED" in recent_log:
-                                            raise Exception(
-                                                "❌ SYNTHESIS NETLIST REQUIRED\n\n"
-                                                "Run Synthesis first to generate the netlist."
-                                            )
-                            except Exception as log_error:
-                                if str(log_error).startswith("❌"):
-                                    raise
-                            
-                            user_error = pnr.build_user_failure_message(
+                        raise Exception(
+                            pnr.build_user_failure_message(
                                 design_name,
-                                operation="Place and route",
-                                constraint_file=constraint_used,
+                                operation="Place and route / bitstream",
+                                constraint_file=constraint_file,
                             )
-                            pnr.pnr_logger.error(user_error)
-                            raise Exception(user_error)
+                        )
+
+                    logging.info("🔧 Running place and route only...")
+                    success = pnr.place_and_route(
+                        design_name,
+                        constraint_file=constraint_file_param,
+                        settings=impl_params,
+                    )
+                    if success:
+                        logging.info("✅ Place and route completed successfully")
+                        return f"Place and route completed successfully for {design_name}"
+
+                    user_error = pnr.build_user_failure_message(
+                        design_name,
+                        operation="Place and route",
+                        constraint_file=constraint_file,
+                    )
+                    pnr.nextpnr_logger.error(user_error)
+                    raise Exception(user_error)
                             
                 except Exception:
                     raise
@@ -7782,6 +7916,36 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.show_message("Error", str(e), "error")
     
+    def _open_multi_seed_progress_dialog(self, design_name: str, total_seeds: int) -> None:
+        """Show (or reuse) the multi-seed progress dialog."""
+        try:
+            from cc_project_manager_pkg.place_and_route_dialog import MultiSeedProgressDialog
+            if self._multi_seed_dialog is not None:
+                try:
+                    self._multi_seed_dialog.close()
+                except Exception:
+                    pass
+            self._multi_seed_dialog = MultiSeedProgressDialog(
+                self, design_name=design_name, total_seeds=total_seeds
+            )
+            self._multi_seed_dialog.show()
+            self._multi_seed_dialog.raise_()
+            self._multi_seed_dialog.activateWindow()
+        except Exception as e:
+            logging.warning(f"Could not open multi-seed progress dialog: {e}")
+
+    def _on_pnr_seed_progress(self, info) -> None:
+        """Thread-safe slot: forward nextpnr multi-seed progress to the dialog."""
+        dlg = getattr(self, "_multi_seed_dialog", None)
+        if dlg is None:
+            return
+        try:
+            dlg.handle_progress(info if isinstance(info, dict) else {})
+            if not dlg.isVisible():
+                dlg.show()
+        except Exception as e:
+            logging.debug(f"multi-seed progress UI update failed: {e}")
+
     def generate_bitstream(self):
         """Generate bitstream from already placed and routed designs."""
         try:
@@ -7794,8 +7958,8 @@ class MainWindow(QMainWindow):
                 logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                 os.chdir(project_dir)
             
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             placed_designs = pnr.get_available_placed_designs()
             
             if not placed_designs:
@@ -7857,8 +8021,8 @@ class MainWindow(QMainWindow):
                 logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                 os.chdir(project_dir)
             
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             placed_designs = pnr.get_available_placed_designs()
             
             if not placed_designs:
@@ -7920,8 +8084,8 @@ class MainWindow(QMainWindow):
                 logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                 os.chdir(project_dir)
             
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             placed_designs = pnr.get_available_placed_designs()
             
             if not placed_designs:
@@ -8000,17 +8164,26 @@ class MainWindow(QMainWindow):
                 
             logging.info(f"📁 Design for full implementation: {design_name}")
             
-            # Show implementation strategy dialog
-            dialog = ImplementationStrategyDialog(self, design_name)
+            # Show Place & Route settings dialog (nextpnr-himbaechel)
+            from cc_project_manager_pkg.place_and_route_dialog import PlaceAndRouteSettingsDialog
+            dialog = PlaceAndRouteSettingsDialog(self, design_name)
             if dialog.exec_() != QDialog.Accepted:
                 logging.info("❌ Full implementation cancelled by user")
                 return
             
             impl_params = dialog.get_implementation_params()
+            # Full implementation always packs bitstream
+            impl_params["generate_bitstream"] = True
             logging.info(f"🔧 Full implementation parameters: {impl_params}")
+
+            if (impl_params.get("seed_mode") or "").lower() == "multi":
+                self._open_multi_seed_progress_dialog(
+                    design_name,
+                    int(impl_params.get("iterations") or 20),
+                )
             
             # Store constraint file mapping for this design
-            constraint_file = impl_params['constraint_file']
+            constraint_file = impl_params.get('constraint_file')
             if constraint_file and constraint_file != "default" and constraint_file != "none":
                 self.design_constraint_mapping[design_name] = constraint_file
             else:
@@ -8019,8 +8192,8 @@ class MainWindow(QMainWindow):
                     logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                     os.chdir(project_dir)
                 
-                from cc_project_manager_pkg.pnr_commands import PnRCommands
-                pnr_temp = PnRCommands()
+                from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                pnr_temp = NextPnRCommands()
                 resolved_path, _, _ = pnr_temp.resolve_constraint_file(design_name=design_name)
                 if resolved_path:
                     self.design_constraint_mapping[design_name] = os.path.basename(resolved_path)
@@ -8033,10 +8206,8 @@ class MainWindow(QMainWindow):
                     logging.info("🔄 FULL IMPLEMENTATION FLOW STARTED")
                     logging.info("=" * 80)
                     logging.info(f"📁 Design: {design_name}")
-                    logging.info(f"🎯 Strategy: {impl_params['strategy']}")
-                    logging.info(f"💾 Generate Bitstream: {impl_params['generate_bitstream']}")
-                    logging.info(f"⏱️  Run Timing Analysis: {impl_params['run_timing_analysis']}")
-                    logging.info(f"📄 Generate Netlist: {impl_params['generate_sim_netlist']}")
+                    logging.info(f"🎯 Preset: {impl_params.get('preset')}")
+                    logging.info(f"💾 Generate Bitstream: {impl_params.get('generate_bitstream')}")
                     
                     # Ensure we're in the correct project directory
                     project_config_path, project_dir = self.find_project_config()
@@ -8044,16 +8215,20 @@ class MainWindow(QMainWindow):
                         logging.info(f"🔄 Changing working directory to project directory: {project_dir}")
                         os.chdir(project_dir)
                     
-                    from cc_project_manager_pkg.pnr_commands import PnRCommands
-                    pnr = PnRCommands(strategy=impl_params['strategy'])
+                    from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                    pnr = NextPnRCommands(
+                        strategy=impl_params.get('strategy', 'balanced'),
+                        device=impl_params.get('device', 'CCGM1A1'),
+                    )
+                    pnr.set_progress_callback(lambda info: self.pnr_seed_progress.emit(info))
                     
                     # Validate constraint file before proceeding
                     constraint_is_valid, constraint_error = pnr.validate_constraint_file_for_pnr(
                         constraint_file, design_name
                     )
                     if not constraint_is_valid:
-                        pnr.pnr_logger.error(constraint_error)
-                        for handler in pnr.pnr_logger.handlers:
+                        pnr.nextpnr_logger.error(constraint_error)
+                        for handler in pnr.nextpnr_logger.handlers:
                             handler.flush()
                         raise Exception(constraint_error)
                     
@@ -8063,23 +8238,27 @@ class MainWindow(QMainWindow):
                         constraint_file_param = os.path.join(pnr.constraints_dir, constraint_file)
                         logging.info(f"🔗 Using specified constraint file: {constraint_file}")
                     elif constraint_file == "default":
-                        logging.info("🔍 Using auto-detection for constraint file (will use default or first available .ccf)")
-                    # If constraint_file is "default", leave constraint_file_param as None to enable auto-detection
+                        logging.info("🔍 Using auto-detection for constraint file")
                     
                     success = pnr.full_implementation_flow(
                         design_name,
                         constraint_file=constraint_file_param,
-                        generate_bitstream=impl_params['generate_bitstream'],
-                        run_timing_analysis=impl_params['run_timing_analysis'],
-                        generate_sim_netlist=impl_params['generate_sim_netlist'],
-                        sim_netlist_format="vhdl"
+                        settings=impl_params,
+                        generate_bitstream=True,
+                        run_timing_analysis=impl_params.get('run_timing_analysis', False),
+                        generate_sim_netlist=impl_params.get('generate_sim_netlist', False),
                     )
                     
                     if success:
                         logging.info("✅ Full implementation flow completed successfully")
                         return f"Full implementation flow completed successfully for {design_name}"
-                    else:
-                        raise Exception(f"Full implementation flow failed for {design_name}")
+                    raise Exception(
+                        pnr.build_user_failure_message(
+                            design_name,
+                            operation="Full implementation",
+                            constraint_file=constraint_file,
+                        )
+                    )
                         
                 except Exception as e:
                     logging.error(f"❌ Full implementation operation failed: {e}")
@@ -8098,42 +8277,27 @@ class MainWindow(QMainWindow):
         logging.info("Opening implementation logs...")
         
         try:
-            # Get the implementation log file path from project configuration
-            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
-            hierarchy = HierarchyManager()
+            # Prefer nextpnr logs; fall back to legacy pnr_commands.log
+            impl_log_path = self._resolve_project_log_file(
+                "nextpnr_commands.log", config_section="nextpnr_commands"
+            )
+            if not impl_log_path:
+                impl_log_path = self._resolve_project_log_file(
+                    "pnr_commands.log", config_section="pnr_commands"
+                )
             
-            if not hierarchy.config_path or not os.path.exists(hierarchy.config_path):
-                self.show_message("Error", "No project configuration found. Please create or load a project first.", "error")
-                return
-            
-            # Load project configuration
-            import yaml
-            with open(hierarchy.config_path, 'r') as f:
-                config = yaml.safe_load(f)
-            
-            # Get pnr log file path
-            pnr_log_path = None
-            logs_section = config.get("logs", {})
-            pnr_commands = logs_section.get("pnr_commands", {})
-            
-            if isinstance(pnr_commands, dict):
-                pnr_log_path = pnr_commands.get("pnr_commands.log")
-            
-            if not pnr_log_path or not os.path.exists(pnr_log_path):
+            if not impl_log_path:
                 self.show_message("Info", 
                     "No implementation logs found yet.\n\n"
                     "Implementation logs will be available after running P&R operations.\n"
-                    "The logs contain detailed output from the P&R tool including:\n"
+                    "The logs contain detailed output from nextpnr-himbaechel / gmpack including:\n"
                     "• Place and route execution details\n"
-                    "• Implementation strategy results\n"
-                    "• Resource utilization reports\n"
-                    "• Timing analysis results\n"
-                    "• Bitstream generation output\n"
+                    "• Constraint file usage\n"
+                    "• Bitstream packing output\n"
                     "• Error messages and warnings", "info")
                 return
             
-            # Create and show log viewer dialog
-            self._show_implementation_log_dialog(pnr_log_path)
+            self._show_implementation_log_dialog(impl_log_path)
             
         except Exception as e:
             logging.error(f"Error accessing implementation logs: {e}")
@@ -8437,8 +8601,8 @@ class MainWindow(QMainWindow):
             return
             
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Check if design has timing analysis
             status = pnr.get_implementation_status(self.selected_design)
@@ -8464,7 +8628,7 @@ class MainWindow(QMainWindow):
                     break
             
             # Look for timing analysis in the main log file
-            log_file = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
+            log_file = os.path.join(pnr.impl_logs_dir, "nextpnr_commands.log")
             if os.path.exists(log_file):
                 timing_files.append(log_file)
             
@@ -8496,8 +8660,8 @@ class MainWindow(QMainWindow):
             return
             
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Check if design has been implemented
             status = pnr.get_implementation_status(self.selected_design)
@@ -8549,8 +8713,8 @@ class MainWindow(QMainWindow):
             return
             
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Check if design has been implemented
             status = pnr.get_implementation_status(self.selected_design)
@@ -10029,32 +10193,35 @@ Simulation Options:
         self.run_in_thread(verify_operation, success_msg="Bitstream verification completed")
     
     def view_upload_logs(self):
-        """View openFPGALoader log files and programming history."""
+        """View FPGA programming log files and history."""
         try:
-            # Find the openFPGALoader log file
-            from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
-            hierarchy = HierarchyManager()
-            
-            # Get log file path from project structure
-            if hierarchy.config and 'project_structure' in hierarchy.config:
-                logs_dir = hierarchy.config['project_structure']['logs'][0]
-                log_file_path = os.path.join(logs_dir, 'openfpgaloader.log')
-            else:
-                # Fallback to current directory logs
-                log_file_path = os.path.join(os.getcwd(), 'logs', 'openfpgaloader.log')
-            
-            if not os.path.exists(log_file_path):
-                # Create empty log file if it doesn't exist
-                os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
-                with open(log_file_path, 'w') as f:
-                    f.write("# openFPGALoader Log File\\n")
-                    f.write("# This file contains all openFPGALoader operations and output\\n\\n")
+            log_file_path = self._resolve_project_log_file(
+                "zi_fpga_loader.log", config_section="zi_fpga_loader"
+            )
+            if not log_file_path:
+                log_file_path = self._resolve_project_log_file("openfpgaloader.log")
+
+            if not log_file_path:
+                project_config_path, project_dir = self.find_project_config()
+                if project_dir:
+                    logs_dir = os.path.join(project_dir, "logs")
+                    os.makedirs(logs_dir, exist_ok=True)
+                    log_file_path = os.path.join(logs_dir, "zi_fpga_loader.log")
+                    if not os.path.exists(log_file_path):
+                        with open(log_file_path, "w", encoding="utf-8") as f:
+                            f.write("# FPGA Loader Log File\n")
+                            f.write("# Programming operations will be recorded here\n\n")
+                else:
+                    QMessageBox.critical(
+                        self, "Error", "No project loaded. Please create or load a project first."
+                    )
+                    return
             
             self._show_upload_log_dialog(log_file_path)
             
         except Exception as e:
             logging.error(f"Error opening upload logs: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to open upload logs:\\n\\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to open upload logs:\n\n{str(e)}")
     
     def _show_upload_log_dialog(self, log_file_path):
         """Show upload log dialog with search and management features."""
@@ -10649,9 +10816,10 @@ Simulation Options:
             
             # Get all VHDL files from the project
             files_info = hierarchy.get_source_files_info()
+            # unique_key -> metadata so duplicate entity names across files are distinct
             entities_with_type = {}
             
-            # Parse each VHDL file to find entities
+            import re
             for category, files in files_info.items():
                 for file_name, file_path in files.items():
                     if os.path.exists(file_path) and file_path.lower().endswith(('.vhd', '.vhdl')):
@@ -10659,11 +10827,8 @@ Simulation Options:
                             with open(file_path, 'r', encoding='utf-8') as f:
                                 content = f.read()
                                 
-                            # Simple regex to find entity declarations (case-insensitive but preserve original case)
-                            import re
                             entity_matches = re.findall(r'entity\s+(\w+)\s+is', content, re.IGNORECASE)
                             
-                            # Map category to display type
                             display_type = {
                                 'src': 'Source',
                                 'top': 'Top',
@@ -10671,12 +10836,15 @@ Simulation Options:
                             }.get(category, 'Unknown')
                             
                             for entity in entity_matches:
-                                # If entity already exists, prefer non-testbench types
-                                if entity in entities_with_type:
-                                    if category != 'testbench' and entities_with_type[entity] == 'Testbench':
-                                        entities_with_type[entity] = display_type
-                                else:
-                                    entities_with_type[entity] = display_type
+                                unique_key = f"{entity}::{file_name}"
+                                display_name = f"{entity} ({file_name})"
+                                entities_with_type[unique_key] = {
+                                    "entity": entity,
+                                    "type": display_type,
+                                    "file_name": file_name,
+                                    "file_path": file_path,
+                                    "display": display_name,
+                                }
                             
                         except Exception as e:
                             logging.warning(f"Could not parse {file_path}: {e}")
@@ -10754,37 +10922,28 @@ Simulation Options:
     def _get_yosys_command_preview(self, yosys_instance, entity_name, use_gatemate, custom_options=None):
         """Get a preview of the Yosys command that will be executed."""
         try:
-            # Get working directory
             work_dir = os.getcwd()
-            
-            # Get VHDL files for the command
-            vhdl_files = self._get_project_vhdl_files()
-            vhdl_file_names = [os.path.basename(f) for f in vhdl_files]
-            
-            # Construct basic command info based on YosysCommands structure
             if use_gatemate:
-                # GateMate synthesis command
-                command_parts = [
-                    "yosys",
-                    "-p",
-                    f"'ghdl --std={yosys_instance.vhdl_std} --ieee={yosys_instance.ieee_lib} {' '.join(vhdl_file_names)} -e {entity_name}; synth_gatemate -top {entity_name}; write_json {entity_name}_gatemate.json; write_verilog {entity_name}_gatemate.v'"
+                preview = yosys_instance.build_gatemate_command_preview(entity_name)
+                command = preview.get("combined") or preview.get("yosys")
+                output_files = [
+                    f"{entity_name}_synth.v",
+                    f"{entity_name}_synth.json",
+                    f"{entity_name}.v",
                 ]
-                output_files = [f"{entity_name}_gatemate.json", f"{entity_name}_gatemate.v"]
             else:
-                # Generic synthesis command
-                command_parts = [
-                    "yosys",
-                    "-p", 
-                    f"'ghdl --std={yosys_instance.vhdl_std} --ieee={yosys_instance.ieee_lib} {' '.join(vhdl_file_names)} -e {entity_name}; synth -top {entity_name}; write_json {entity_name}.json; write_verilog {entity_name}.v'"
-                ]
+                vhdl_files = self._get_project_vhdl_files()
+                vhdl_file_names = [os.path.basename(f) for f in vhdl_files]
+                command = (
+                    f"yosys -p \"ghdl --std={yosys_instance.vhdl_std} "
+                    f"--ieee={yosys_instance.ieee_lib} {' '.join(vhdl_file_names)} "
+                    f"-e {entity_name}; synth -top {entity_name}; "
+                    f"write_json {entity_name}.json; write_verilog {entity_name}.v\""
+                )
                 output_files = [f"{entity_name}.json", f"{entity_name}.v"]
-            
-            # Add custom options if provided
-            if custom_options:
-                command_parts.extend(custom_options)
-            
-            command = " ".join(command_parts)
-            
+                if custom_options:
+                    command = f"{command} {' '.join(custom_options)}"
+
             return {
                 'command': command,
                 'work_dir': work_dir,
@@ -10806,32 +10965,33 @@ Simulation Options:
             from cc_project_manager_pkg.toolchain_manager import ToolChainManager
             tcm = ToolChainManager()
             synth_dir = tcm.config["project_structure"]["synth"][0] if isinstance(tcm.config["project_structure"]["synth"], list) else tcm.config["project_structure"]["synth"]
+            netlist_dir = tcm.config["project_structure"]["impl"]["netlist"][0]
             
-            # Common output file patterns
             if use_gatemate:
                 patterns = [
-                    f"{entity_name}_gatemate.json",
-                    f"{entity_name}_gatemate.v",
-                    f"{entity_name}.v"
+                    (synth_dir, f"{entity_name}_synth.v"),
+                    (synth_dir, f"{entity_name}_synth.json"),
+                    (netlist_dir, f"{entity_name}.v"),
                 ]
             else:
                 patterns = [
-                    f"{entity_name}.json",
-                    f"{entity_name}.v",
-                    f"{entity_name}_synth.v"
+                    (synth_dir, f"{entity_name}.json"),
+                    (synth_dir, f"{entity_name}.v"),
+                    (synth_dir, f"{entity_name}_synth.v"),
                 ]
             
-            # Check in synthesis directory
-            if os.path.exists(synth_dir):
-                for pattern in patterns:
-                    file_path = os.path.join(synth_dir, pattern)
-                    if os.path.exists(file_path):
-                        output_files.append(file_path)
+            for directory, pattern in patterns:
+                if not directory:
+                    continue
+                file_path = os.path.join(directory, pattern)
+                if os.path.exists(file_path):
+                    output_files.append(file_path)
             
-            # Also check current directory
-            for pattern in patterns:
+            for _, pattern in patterns:
                 if os.path.exists(pattern):
-                    output_files.append(os.path.abspath(pattern))
+                    abs_path = os.path.abspath(pattern)
+                    if abs_path not in [os.path.abspath(p) for p in output_files]:
+                        output_files.append(abs_path)
             
             return output_files
             
@@ -11232,8 +11392,8 @@ Simulation Options:
     def _find_constraint_files(self):
         """Find available constraint files for implementation."""
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             constraint_files = {}
             
@@ -11277,11 +11437,11 @@ Simulation Options:
                 return self.design_constraint_mapping[design_name]
             
             # Try to determine from log files or implementation files
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Check PnR log files for constraint file usage
-            log_file = os.path.join(pnr.impl_logs_dir, "pnr_commands.log")
+            log_file = os.path.join(pnr.impl_logs_dir, "nextpnr_commands.log")
             if os.path.exists(log_file):
                 try:
                     with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
@@ -11315,8 +11475,8 @@ Simulation Options:
     def _find_implementation_outputs(self):
         """Find implementation output files and their status."""
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             implementation_outputs = {}
             
@@ -11330,42 +11490,51 @@ Simulation Options:
                 # Collect all output files for this design
                 output_files = []
                 
-                # Implementation files (check both patterns)
+                # Implementation files (nextpnr *_impl.txt + legacy p_r *.cfg)
                 impl_patterns = [
+                    os.path.join(pnr.work_dir, f"{design_name}_impl.txt"),
                     os.path.join(pnr.work_dir, f"{design_name}_impl.cfg"),
-                    os.path.join(pnr.work_dir, f"{design_name}_impl_00.cfg")
+                    os.path.join(pnr.work_dir, f"{design_name}_impl_00.cfg"),
                 ]
                 
                 for impl_file in impl_patterns:
                     if os.path.exists(impl_file):
                         output_files.append(impl_file)
                 
-                # Bitstream files (check both patterns)
+                # Bitstream files (gmpack + legacy patterns)
                 bitstream_patterns = [
                     os.path.join(pnr.bitstream_dir, f"{design_name}.bit"),
-                    os.path.join(pnr.bitstream_dir, f"{design_name}_impl_00.cfg.bit")
+                    os.path.join(pnr.bitstream_dir, f"{design_name}_impl_00.cfg.bit"),
                 ]
                 
                 for bitstream_file in bitstream_patterns:
                     if os.path.exists(bitstream_file):
                         output_files.append(bitstream_file)
                 
-                # Timing files (check multiple patterns)
+                # Timing / report files (nextpnr --report / --sdf + legacy)
                 timing_patterns = [
+                    os.path.join(pnr.timing_dir, f"{design_name}_report.json"),
                     os.path.join(pnr.timing_dir, f"{design_name}_timing.rpt"),
                     os.path.join(pnr.timing_dir, f"{design_name}.sdf"),
-                    os.path.join(pnr.timing_dir, f"{design_name}_impl_00.sdf")
+                    os.path.join(pnr.timing_dir, f"{design_name}_impl_00.sdf"),
                 ]
                 
                 for timing_file in timing_patterns:
                     if os.path.exists(timing_file):
                         output_files.append(timing_file)
                 
-                # Post-implementation netlists (check both patterns)
-                for fmt, ext in pnr.NETLIST_FORMATS.items():
+                # Post-implementation netlists (optional / legacy)
+                netlist_formats = getattr(pnr, "NETLIST_FORMATS", {
+                    "vhdl": ".vhd",
+                    "verilog": ".v",
+                    "json": ".json",
+                    "blif": ".blif",
+                })
+                for fmt, ext in netlist_formats.items():
                     netlist_patterns = [
+                        os.path.join(pnr.netlist_dir, f"{design_name}{ext}"),
                         os.path.join(pnr.netlist_dir, f"{design_name}_impl{ext}"),
-                        os.path.join(pnr.netlist_dir, f"{design_name}_impl_00{ext}")
+                        os.path.join(pnr.netlist_dir, f"{design_name}_impl_00{ext}"),
                     ]
                     
                     for netlist_file in netlist_patterns:
@@ -11849,8 +12018,8 @@ Simulation Options:
     def _generate_power_estimate(self):
         """Generate power estimate based on utilization data."""
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Look for utilization data
             lut_report = os.path.join(pnr.work_dir, "lut_report.txt")
@@ -11903,8 +12072,8 @@ For more accurate power analysis:
     def _generate_power_estimate_for_design(self, design_name):
         """Generate power estimate for a specific design based on utilization data."""
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             # Look for design-specific utilization data
             design_used_file = os.path.join(pnr.work_dir, f"{design_name}_impl_00.used")
@@ -12149,8 +12318,8 @@ For more accurate power analysis:
                 elif parent_text == "Synthesized Designs" and item_type == "Synthesis":
                     # Check if this design has implementation outputs
                     potential_design = item.text(0)
-                    from cc_project_manager_pkg.pnr_commands import PnRCommands
-                    pnr = PnRCommands()
+                    from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                    pnr = NextPnRCommands()
                     placed_designs = pnr.get_available_placed_designs()
                     if potential_design in placed_designs:
                         design_name = potential_design
@@ -12274,8 +12443,8 @@ For more accurate power analysis:
     def _update_design_status(self, design_name):
         """Update the status label for the selected design."""
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             status = pnr.get_implementation_status(design_name)
             
             status_parts = []
@@ -12330,15 +12499,13 @@ class FPGABoardSelectionDialog(QDialog):
         main_layout = QVBoxLayout(self)
         
         # Title and description
-        title = QLabel("FPGA Board Selection")
+        title = QLabel(
+            "FPGA Board Selection — Select your FPGA board and test connectivity before programming operations."
+        )
         title.setFont(QFont("Arial", 14, QFont.Bold))
+        title.setWordWrap(True)
         title.setStyleSheet("color: #4CAF50; margin-bottom: 10px;")
         main_layout.addWidget(title)
-        
-        description = QLabel("Select your FPGA board and test connectivity before programming operations.")
-        description.setWordWrap(True)
-        description.setStyleSheet("color: #888888; margin-bottom: 15px;")
-        main_layout.addWidget(description)
         
         # Create horizontal layout for main content (left and right panels)
         content_layout = QHBoxLayout()
@@ -12364,11 +12531,6 @@ class FPGABoardSelectionDialog(QDialog):
         board_select_layout.addWidget(self.board_combo)
         
         board_layout.addLayout(board_select_layout)
-        
-        # Board info
-        self.board_info_label = QLabel(f"Selected: {self.current_board['name']}")
-        self.board_info_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin: 5px 0px;")
-        board_layout.addWidget(self.board_info_label)
 
         self.programming_tool_label = QLabel("Programming Tool: openFPGALoader")
         self.programming_tool_label.setStyleSheet("color: #64b5f6; margin: 2px 0px;")
@@ -12538,12 +12700,17 @@ class FPGABoardSelectionDialog(QDialog):
             upload_manager = create_upload_manager(board_identifier)
 
             com_port = self.com_port_edit.text().strip() or upload_manager.get_com_port()
-            self.results_text.append(f"Testing ZI FPGA Loader serial connection on {com_port}\n")
+            self.results_text.append(
+                f"Testing ZI FPGA Loader serial connection on {com_port}\n"
+                f"Sending VERSION command…\n"
+            )
 
             if upload_manager.detect_devices():
+                version = getattr(upload_manager, "last_firmware_version", None) or "(no reply)"
                 output_text = (
                     f"✅ Serial port {com_port} opened successfully.\n"
                     f"Programming tool: ZI FPGA Loader\n"
+                    f"VERSION: {version}\n"
                 )
                 available_ports = upload_manager.list_serial_ports()
                 if available_ports:
@@ -12614,7 +12781,6 @@ class FPGABoardSelectionDialog(QDialog):
             'name': board_name,
             'identifier': board_data
         }
-        self.board_info_label.setText(f"Selected: {board_name}")
         
         # Reset connection status
         self.connection_status_label.setText("Connection: Not tested")
@@ -13719,8 +13885,8 @@ class ImplementationStrategyDialog(QDialog):
             return
 
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             design_path = pnr.get_constraint_file_path(self.design_name)
             if pnr.has_active_constraints(design_path):
                 idx = self.constraints_combo.findData(design_ccf)
@@ -13736,8 +13902,8 @@ class ImplementationStrategyDialog(QDialog):
             list: List of available constraint file names
         """
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             constraint_files = pnr.list_available_constraint_files()
             return constraint_files
         except Exception as e:
@@ -13751,8 +13917,8 @@ class ImplementationStrategyDialog(QDialog):
             str: Name of the constraint file that will be auto-detected
         """
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
-            pnr = PnRCommands()
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+            pnr = NextPnRCommands()
             
             resolved_path, reason, is_template = pnr.resolve_constraint_file(
                 design_name=self.design_name
@@ -13781,7 +13947,7 @@ class ImplementationStrategyDialog(QDialog):
             dict: Dictionary of strategy_name -> description
         """
         try:
-            from cc_project_manager_pkg.pnr_commands import PnRCommands
+            from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
             
             # Get strategy descriptions from PnRCommands
             strategies = {}

@@ -1,18 +1,37 @@
 import os
+import shutil
 import yaml
 import logging
 import subprocess
+from typing import Any, Dict, List, Optional, Tuple
 from .hierarchy_manager import HierarchyManager
 
 
 class ToolChainManager(HierarchyManager):
     """Controls what the GateMate toolchain is doing"""
     
-    #GateMate tool chain definitions and binaries
-    __tool_chain = {"ghdl" : "ghdl.exe" ,  #VHDL compiler and analysis, yosys plugin
-                    "yosys" : "yosys.exe", #HDL synthesizer
-                    "p_r" : "p_r.exe",      #Cologne Chip Place and Router for GateMate A1
-                    "openfpgaloader" : "openFPGALoader.exe"}  #Universal FPGA programmer
+    # GateMate toolchain binaries (OSS CAD Suite + standalone GHDL).
+    # Legacy proprietary p_r is no longer part of the supported flow.
+    __tool_chain = {
+        "ghdl": "ghdl.exe",
+        "yosys": "yosys.exe",
+        "nextpnr_himbaechel": "nextpnr-himbaechel.exe",
+        "gmpack": "gmpack.exe",
+        "openfpgaloader": "openFPGALoader.exe",  # optional; ZI loader preferred for Zector boards
+    }
+
+    # Empty placeholders for config keys. Absolute paths come only from user
+    # Configuration / project YAML / PATH — never hardcode install locations.
+    DEFAULT_TOOL_PATHS = {
+        "ghdl": "",
+        "yosys": "",
+        "nextpnr_himbaechel": "",
+        "gmpack": "",
+        "openfpgaloader": "",
+    }
+
+    # Core tools required for synthesis + implementation
+    REQUIRED_TOOLS = ("ghdl", "yosys", "nextpnr_himbaechel", "gmpack")
     
 
     def __init__(self):
@@ -104,15 +123,25 @@ class ToolChainManager(HierarchyManager):
             logging.info("All GateMate tools are available and configured.")
             print("All GateMate tools are available and configured.")
 
-        # Check Yosys + GHDL plugin if both tools are available
-        if (tool_results.get("yosys", {}).get("available", False) and 
-            tool_results.get("ghdl", {}).get("available", False)):
+        # New flow uses standalone GHDL synth (no Yosys GHDL plugin required).
+        # Still report plugin status as informational if both tools are present.
+        if (tool_results.get("yosys", {}).get("available", False) and
+                tool_results.get("ghdl", {}).get("available", False)):
             if self.check_ghdl_yosys_link():
-                logging.info("The Yosys + GHDL plugin is working correctly")
+                logging.info("Yosys GHDL plugin is available (optional; new flow uses standalone GHDL)")
             else:
-                logging.warning("The Yosys + GHDL plugin may not be working correctly.")
-        else:
-            logging.info("Skipping GHDL-Yosys plugin check (one or both tools not available)")
+                logging.info("Yosys GHDL plugin not detected (OK for new standalone GHDL -> Yosys flow)")
+
+        missing_required = [
+            name for name in self.REQUIRED_TOOLS
+            if not tool_results.get(name, {}).get("available", False)
+        ]
+        if missing_required:
+            logging.error(
+                "Required GateMate tools missing: " + ", ".join(missing_required)
+            )
+            print("Required GateMate tools missing: " + ", ".join(missing_required))
+            return False
 
         return True
 
@@ -129,6 +158,15 @@ class ToolChainManager(HierarchyManager):
         # Also initialize GTKWave preference
         if "gtkwave" not in self.config["cologne_chip_gatemate_tool_preferences"]:
             self.config["cologne_chip_gatemate_tool_preferences"]["gtkwave"] = "PATH"
+
+        # Prefer DIRECT when a user-configured absolute path exists and PATH fails
+        paths = self.config.setdefault("cologne_chip_gatemate_toolchain_paths", {})
+        for tool_name in self.__tool_chain:
+            current = paths.get(tool_name, "")
+            if current and os.path.exists(current):
+                pref = self.config["cologne_chip_gatemate_tool_preferences"].get(tool_name, "PATH")
+                if pref in ("PATH", "UNDEFINED") and not self.check_tool_version_path(tool_name):
+                    self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = "DIRECT"
         
         # Save configuration
         self.update_config()
@@ -199,50 +237,231 @@ class ToolChainManager(HierarchyManager):
         # Save configuration
         return self.update_config()
 
+    def get_oss_cad_suite_root(self) -> str:
+        """Return the OSS CAD Suite root directory if it can be determined.
+
+        Resolution order (no hardcoded install locations):
+        1. ``YOSYSHQ_ROOT`` environment variable
+        2. Parent of ``bin/`` from a configured tool absolute path
+        3. Parent of ``bin/`` from a tool found on PATH via ``shutil.which``
+        """
+        env_root = os.environ.get("YOSYSHQ_ROOT", "").strip().rstrip("\\/")
+        if env_root and os.path.isdir(env_root):
+            return env_root
+
+        def _root_from_tool_path(tool_path: str) -> str:
+            if not tool_path:
+                return ""
+            norm = os.path.normpath(tool_path)
+            parent = os.path.dirname(norm)
+            if os.path.basename(parent).lower() == "bin":
+                root = os.path.dirname(parent)
+                if os.path.isdir(os.path.join(root, "lib")):
+                    return root
+            return ""
+
+        # Infer from configured Yosys / nextpnr / gmpack paths (.../bin/tool.exe -> root)
+        paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+        for tool in ("yosys", "nextpnr_himbaechel", "gmpack"):
+            root = _root_from_tool_path(paths.get(tool, "") or "")
+            if root:
+                return root
+
+        # Infer from PATH lookups
+        for exe_name in (
+            "yosys",
+            "yosys.exe",
+            "nextpnr-himbaechel",
+            "nextpnr-himbaechel.exe",
+            "gmpack",
+            "gmpack.exe",
+        ):
+            found = shutil.which(exe_name)
+            if found:
+                root = _root_from_tool_path(found)
+                if root:
+                    return root
+
+        return ""
+
+    def get_tool_run_env(self) -> dict:
+        """Build an environment that can execute OSS CAD Suite binaries.
+
+        nextpnr-himbaechel / gmpack / yosys from OSS CAD Suite require both
+        ``bin`` and ``lib`` on PATH (DLL load). This mirrors environment.ps1.
+        """
+        env = os.environ.copy()
+        root = self.get_oss_cad_suite_root()
+        if not root:
+            return env
+
+        bin_dir = os.path.join(root, "bin")
+        lib_dir = os.path.join(root, "lib")
+        prefix_parts = []
+        if os.path.isdir(bin_dir):
+            prefix_parts.append(bin_dir)
+        if os.path.isdir(lib_dir):
+            prefix_parts.append(lib_dir)
+
+        if prefix_parts:
+            prefix = os.pathsep.join(prefix_parts)
+            current = env.get("PATH", "")
+            # Avoid duplicating on every call
+            if not current.lower().startswith(prefix.lower()):
+                env["PATH"] = prefix + os.pathsep + current
+            env["YOSYSHQ_ROOT"] = root if root.endswith(os.sep) else root + os.sep
+            cert = os.path.join(root, "etc", "cacert.pem")
+            if os.path.exists(cert):
+                env["SSL_CERT_FILE"] = cert
+        return env
+
+    def _tool_version_args(self, tool_name: str) -> List[str]:
+        """Return CLI args used to probe a tool's version / availability."""
+        if tool_name == "openfpgaloader":
+            return ["--Version"]
+        if tool_name == "gmpack":
+            # gmpack does not support --version; --help prints the banner + usage
+            return ["--help"]
+        return ["--version"]
+
+    def _extract_version_string(self, tool_name: str, stdout: str, stderr: str) -> str:
+        """Parse a short human-readable version string from tool output."""
+        text = "\n".join([stdout or "", stderr or ""]).strip()
+        if not text:
+            return ""
+
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return ""
+
+        if tool_name == "gmpack":
+            for ln in lines:
+                if "version" in ln.lower() and ("gatemate" in ln.lower() or "peppercorn" in ln.lower() or ln.lower().startswith("open source")):
+                    return ln
+            return lines[0][:120]
+
+        if tool_name == "nextpnr_himbaechel":
+            # e.g. "nextpnr-himbaechel" -- Next Generation Place and Route (Version nextpnr-0.11-...)
+            for ln in lines:
+                if "version" in ln.lower() or "nextpnr" in ln.lower():
+                    return ln[:160]
+            return lines[0][:160]
+
+        if tool_name == "yosys":
+            for ln in lines:
+                if ln.lower().startswith("yosys"):
+                    return ln[:160]
+            return lines[0][:160]
+
+        if tool_name == "ghdl":
+            for ln in lines:
+                if ln.lower().startswith("ghdl"):
+                    return ln[:160]
+            return lines[0][:160]
+
+        return lines[0][:160]
+
+    def _probe_tool_command(self, command: str, tool_name: str) -> Tuple[bool, str]:
+        """Run a version/help probe. Returns (ok, version_string)."""
+        if not command:
+            return False, ""
+
+        args = [command] + self._tool_version_args(tool_name)
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=self.get_tool_run_env(),
+                timeout=20,
+            )
+        except FileNotFoundError:
+            return False, ""
+        except subprocess.TimeoutExpired:
+            logging.debug(f"{tool_name} probe timed out: {args}")
+            return False, ""
+        except Exception as e:
+            logging.debug(f"{tool_name} probe failed: {e}")
+            return False, ""
+
+        combined = (result.stdout or "") + (result.stderr or "")
+        version = self._extract_version_string(tool_name, result.stdout or "", result.stderr or "")
+
+        if tool_name == "gmpack":
+            # --help / unknown option still prints the version banner; treat as available
+            ok = (
+                "gatemate" in combined.lower()
+                or "peppercorn" in combined.lower()
+                or "bitstream packer" in combined.lower()
+                or "gmpack" in combined.lower()
+                or result.returncode == 0
+            )
+            return ok, version
+
+        # nextpnr prints version on stderr with exit 0; accept either stream
+        if result.returncode == 0:
+            return True, version
+
+        # Some tools write useful version info even on non-zero (rare)
+        if version and ("version" in version.lower() or tool_name.split("_")[0] in version.lower()):
+            return True, version
+
+        return False, ""
+
+    def get_tool_version_string(self, tool_name: str, prefer: Optional[str] = None) -> str:
+        """Return version string for a tool using PATH or DIRECT preference."""
+        if tool_name not in self.__tool_chain:
+            return ""
+
+        preference = (prefer or self.get_tool_preference(tool_name) or "PATH").upper()
+        candidates = []
+        if preference == "DIRECT":
+            tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+            direct = tool_paths.get(tool_name, "") or ""
+            if direct:
+                candidates.append(direct)
+            candidates.append(self.__tool_chain[tool_name])
+        else:
+            candidates.append(self.__tool_chain[tool_name])
+            tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+            direct = tool_paths.get(tool_name, "") or ""
+            if direct:
+                candidates.append(direct)
+
+        seen = set()
+        for cmd in candidates:
+            if not cmd or cmd in seen:
+                continue
+            seen.add(cmd)
+            ok, version = self._probe_tool_command(cmd, tool_name)
+            if ok and version:
+                return version
+            if ok:
+                return "Available"
+        return ""
+
     def check_tool_version_path(self, tool_name: str) -> bool:
-        """Check if a specific tool is available through PATH."""
+        """Check if a specific tool is available through PATH (with OSS CAD Suite env)."""
         if tool_name not in self.__tool_chain:
             return False
-        
-        try:
-            # Use the actual binary name from the tool chain dictionary
-            tool_command = self.__tool_chain[tool_name]
-            
-            # Use appropriate version flag
-            version_flag = "--version"
-            if tool_name == "openfpgaloader":
-                version_flag = "--Version"
-            
-            result = subprocess.run([tool_command, version_flag], capture_output=True, text=True, check=True)
-            logging.debug(f"{tool_name} PATH check successful: {result.stdout[:100]}")
-            return True
-        except (FileNotFoundError, subprocess.CalledProcessError) as e:
-            logging.debug(f"{tool_name} PATH check failed: {e}")
-            return False
+        ok, _ = self._probe_tool_command(self.__tool_chain[tool_name], tool_name)
+        return ok
 
     def check_tool_version_direct(self, tool_name: str) -> bool:
-        """Check if a specific tool is available through direct path."""
+        """Check if a specific tool is available through direct path (with OSS CAD Suite env)."""
         if tool_name not in self.__tool_chain:
             return False
         
         tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-        tool_path = tool_paths.get(tool_name, "")
+        tool_path = tool_paths.get(tool_name, "") or ""
         
         if not tool_path or not os.path.exists(tool_path):
             return False
-        
-        try:
-            # Use appropriate version flag
-            version_flag = "--version"
-            if tool_name == "openfpgaloader":
-                version_flag = "--Version"
-            
-            result = subprocess.run([tool_path, version_flag], capture_output=True, text=True, check=True)
-            logging.debug(f"{tool_name} DIRECT check successful: {result.stdout[:100]}")
-            return True
-        except (FileNotFoundError, subprocess.CalledProcessError) as e:
-            logging.debug(f"{tool_name} DIRECT check failed: {e}")
-            return False
+
+        ok, _ = self._probe_tool_command(tool_path, tool_name)
+        return ok
 
     def get_tool_command(self, tool_name: str) -> str:
         """
@@ -260,17 +479,22 @@ class ToolChainManager(HierarchyManager):
         
         preference = self.get_tool_preference(tool_name)
         
+        tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+        configured = tool_paths.get(tool_name, "") or ""
+
         if preference == "DIRECT":
-            tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-            tool_path = tool_paths.get(tool_name, "")
-            if tool_path and os.path.exists(tool_path):
-                return tool_path
-            else:
-                logging.warning(f"{tool_name} preference is DIRECT but path not found, falling back to PATH")
-                return self.__tool_chain[tool_name]
+            if configured and os.path.exists(configured):
+                return configured
+            logging.warning(
+                f"{tool_name} preference is DIRECT but path not found, falling back to PATH"
+            )
+            return self.__tool_chain[tool_name]
         elif preference == "PATH":
+            # Prefer configured absolute path when PATH binary is not yet activated
             return self.__tool_chain[tool_name]
         else:
+            if configured and os.path.exists(configured):
+                return configured
             logging.warning(f"{tool_name} preference is {preference}, tool may not be available")
             return ""
 
@@ -323,8 +547,8 @@ class ToolChainManager(HierarchyManager):
                         #return False
                     else:
                         logging.error(f"{tool} is unavailable at {tool_path}. Reconfigure GateMate tool chain. override_exit is set, continuing.")
-                version = subprocess.run([f"{tool_path}","--version"], capture_output=True, text=True, check=True)
-                if not version:
+                ok, _ = self._probe_tool_command(tool_path, tool)
+                if not ok:
                     logging.error(f"Invalid response from {tool} at {tool_path}. Reconfigure GateMate tool chain. Exit.")
                     return False
                 logging.info(f"GateMate tool {tool} is confirmed working at {tool_path}")
@@ -375,46 +599,128 @@ class ToolChainManager(HierarchyManager):
         return success
 
     def check_ghdl_yosys_link(self) -> bool:
+        """Verify the GateMate synthesis toolchain pieces used by this app.
+
+        The OSS CAD Suite Yosys build does **not** ship a Yosys ``ghdl`` plugin.
+        The supported flow is:
+
+        1. Standalone GHDL (``ghdl synth ... --out=verilog``)
+        2. OSS CAD Yosys ``synth_gatemate`` (with ``-luttree -nomx8``)
+
+        This check therefore confirms GHDL is callable and that Yosys exposes
+        ``synth_gatemate``, not that ``yosys -p "help ghdl"`` succeeds.
         """
-        Check whether the GHDL plugin is available in the configured Yosys binary.
+        logging.info("Verifying GateMate synthesis flow: standalone GHDL + Yosys synth_gatemate.")
 
-        This verifies that the Yosys path is set in the config and that invoking
-        'yosys -p "help ghdl"' returns expected plugin output. Returns True if the
-        GHDL plugin is available, otherwise logs an error or warning and returns False.
-
-        Returns:
-            bool: True if the GHDL plugin is found, False otherwise.
-        """
-        logging.info("Verifying Yosys' GHDL plugin installation.")
-
-        # Use the new get_tool_command method to get the correct yosys command
-        yosys_access = self.get_tool_command("yosys")
-        
-        if not yosys_access:
-            logging.error("Yosys is not available - cannot check GHDL plugin")
+        ghdl_cmd = self.get_tool_command("ghdl")
+        if not ghdl_cmd:
+            logging.error("GHDL is not available - GateMate synthesis flow cannot run")
             return False
 
-        #Query Yosys for GHDL
-        try:
-            result = subprocess.run([yosys_access, "-p" , "help ghdl"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            logging.info(f"Querying Yosys for GHDL plugin with: \"{yosys_access} -p 'help ghdl'\"")
-            if result.stdout:
-                logging.info(f"Yosys STDOUT:\n{result.stdout}")
-            elif result.stderr:
-                logging.info(f"Yosys STDERR:\n{result.stderr}")
-            #print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            logging.error(f"An error occured querying the yosys binary. Run check_toolchain() to verify the toolchain installation. Error {e}")
-            return False
-        #Check if the GHDL plugin was available
-        keywords = ("Analyse", "elaborate", "vhdl standard", "ghdl [options] unit [arch]")
-
-        if any(word.lower() in result.stdout.lower() for word in keywords):
-            logging.info("GHDL plugin is available in Yosys.")
-            return True
+        ok_ghdl, ghdl_ver = self._probe_tool_command(ghdl_cmd, "ghdl")
+        if not ok_ghdl:
+            # Fall back to PATH / DIRECT probes
+            if not (self.check_tool_version_path("ghdl") or self.check_tool_version_direct("ghdl")):
+                logging.error("GHDL probe failed - GateMate synthesis flow cannot run")
+                return False
         else:
-            logging.warning("GHDL plugin may not be properly installed in Yosys.")
+            logging.info(f"Standalone GHDL OK: {ghdl_ver or ghdl_cmd}")
+
+        yosys_access = self.get_tool_command("yosys")
+        if not yosys_access:
+            logging.error("Yosys is not available - cannot check synth_gatemate")
             return False
+
+        try:
+            result = subprocess.run(
+                [yosys_access, "-p", "help synth_gatemate"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=self.get_tool_run_env(),
+                timeout=30,
+            )
+        except Exception as e:
+            logging.error(f"Failed to query Yosys for synth_gatemate: {e}")
+            return False
+
+        combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+        logging.info(f"Querying Yosys for synth_gatemate with: \"{yosys_access} -p 'help synth_gatemate'\"")
+        if result.stdout:
+            logging.info(f"Yosys STDOUT:\n{result.stdout}")
+        if result.stderr:
+            logging.info(f"Yosys STDERR:\n{result.stderr}")
+
+        # Accept either help text for the pass or the typical option list
+        keywords = (
+            "synth_gatemate",
+            "luttree",
+            "nomx8",
+            "gatemate",
+            "-top",
+            "-json",
+        )
+        if any(word.lower() in combined.lower() for word in keywords) and "no such command" not in combined.lower():
+            logging.info("Yosys synth_gatemate is available (GateMate synthesis flow OK).")
+            return True
+
+        logging.warning(
+            "Yosys does not appear to provide synth_gatemate. "
+            "Install/use OSS CAD Suite Yosys for GateMate."
+        )
+        return False
+
+    def check_gatemate_synth_flow_status(self) -> Dict[str, Any]:
+        """Return a structured status for the Advanced Checks UI."""
+        status: Dict[str, Any] = {
+            "ok": False,
+            "ghdl_ok": False,
+            "yosys_ok": False,
+            "message": "",
+            "detail": "",
+        }
+        try:
+            ghdl_cmd = self.get_tool_command("ghdl") or ""
+            status["ghdl_ok"] = bool(
+                ghdl_cmd and (self.check_tool_version_path("ghdl") or self.check_tool_version_direct("ghdl"))
+            )
+            yosys_cmd = self.get_tool_command("yosys") or ""
+            yosys_probe_ok = False
+            if yosys_cmd:
+                result = subprocess.run(
+                    [yosys_cmd, "-p", "help synth_gatemate"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=self.get_tool_run_env(),
+                    timeout=30,
+                )
+                combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+                yosys_probe_ok = (
+                    "synth_gatemate" in combined.lower()
+                    and "no such command" not in combined.lower()
+                )
+            status["yosys_ok"] = yosys_probe_ok
+            status["ok"] = status["ghdl_ok"] and status["yosys_ok"]
+            if status["ok"]:
+                status["message"] = "GateMate synth flow: ✅ GHDL + Yosys synth_gatemate ready"
+                status["detail"] = (
+                    "Uses standalone GHDL (VHDL→Verilog) then OSS CAD Yosys "
+                    "synth_gatemate -luttree -nomx8 (no Yosys ghdl plugin required)."
+                )
+            elif not status["ghdl_ok"] and not status["yosys_ok"]:
+                status["message"] = "GateMate synth flow: ❌ GHDL and Yosys synth_gatemate unavailable"
+            elif not status["ghdl_ok"]:
+                status["message"] = "GateMate synth flow: ⚠️ GHDL missing (Yosys synth_gatemate OK)"
+            else:
+                status["message"] = "GateMate synth flow: ⚠️ Yosys synth_gatemate missing (GHDL OK)"
+            return status
+        except Exception as e:
+            status["message"] = f"GateMate synth flow: ❌ Check failed ({e})"
+            return status
 
 
     def add_tool_path(self, tool_name : str = None,  path : str = None) -> bool:
@@ -422,7 +728,8 @@ class ToolChainManager(HierarchyManager):
         tool_name must be in __tool_chain
 
         Syntax:
-            path must follow "F:\\GateMate_toolchain\\ghdl\bin\\ghdl.exe" syntax. Double backslashes required.
+            path must be an absolute path to the tool executable.
+            In YAML, backslashes must be escaped (e.g. "C:\\\\tools\\\\bin\\\\ghdl.exe").
         
         """
         #Verifying tool_name
@@ -465,20 +772,26 @@ class ToolChainManager(HierarchyManager):
         """creates the path structure in the project configuration file"""
     
         #Loading this one into the project config
-        tool_path_structure = { 
-            "ghdl" : "",
-            "yosys" : "",
-            "p_r"   : "",
-            "openfpgaloader" : ""
+        tool_path_structure = {
+            tool: self.DEFAULT_TOOL_PATHS.get(tool, "")
+            for tool in self.__tool_chain
         }
 
-        #Check if the structure already exist
         if "cologne_chip_gatemate_toolchain_paths" in self.config:
-            logging.warning(f"The toolchain structure already exists in the project configuration. Skipping.")
+            # Migrate older projects: ensure new keys exist (empty until user configures)
+            paths = self.config["cologne_chip_gatemate_toolchain_paths"]
+            updated = False
+            for tool, default_path in tool_path_structure.items():
+                if tool not in paths:
+                    paths[tool] = default_path
+                    updated = True
+            if updated:
+                logging.info("Updated toolchain path structure with OSS CAD Suite tool keys")
+                self.update_config()
+            # Structure already present and unchanged — stay quiet
             return
-        
-        #It didnt. Making it
-        logging.info(f"Creating a tool path structure in the project configuration file.")
+
+        logging.info("Creating a tool path structure in the project configuration file.")
         self.config["cologne_chip_gatemate_toolchain_paths"] = tool_path_structure
 
         try:
@@ -507,15 +820,17 @@ class ToolChainManager(HierarchyManager):
             logging.error(f"Tool command not available for {tool_name}")
             return False
         
-        # Use appropriate version flag for each tool
-        version_flag = "--version"
-        if tool_name == "openfpgaloader":
-            version_flag = "--Version"  # openFPGALoader uses capital V
-        
         try:
-            result = subprocess.run([tool_command, version_flag], capture_output=True, text=True, check=True)    
-            logging.info(f"{tool_name} version check successful:\n{result.stdout}")
-            return True
+            ok, version = self._probe_tool_command(tool_command, tool_name)
+            if ok:
+                logging.info(f"{tool_name} version check successful:\n{version}")
+                return True
+            preference = self.get_tool_preference(tool_name)
+            if preference == "DIRECT":
+                logging.error(f"Error: '{tool_name}' failed at direct path: {tool_command}")
+            else:
+                logging.error(f"Error: '{tool_command}' failed in PATH.")
+            return False
         except FileNotFoundError:
             preference = self.get_tool_preference(tool_name)
             if preference == "DIRECT":
@@ -523,33 +838,9 @@ class ToolChainManager(HierarchyManager):
             else:
                 logging.error(f"Error: '{tool_command}' not found in PATH.")
             return False
-        except subprocess.CalledProcessError as e:
-            preference = self.get_tool_preference(tool_name)
-            if preference == "DIRECT":
-                logging.error(f"Error: '{tool_name}' failed at direct path: {tool_command}")
-            else:
-                logging.error(f"Error: '{tool_command}' failed in PATH.")
-            return False
 
 
 if __name__ == "__main__":
-    """
-    Usage:
-    Insantiate ToolChainManager.
-    Set tool paths for ghdl, pnr, yosys with add_tool_path()
-    Run check_toolchain()
-    """
-
+    """Manual smoke test: configure tools via Configuration / PATH, then check."""
     tcm = ToolChainManager()
-    tcm.add_tool_path("ghdl"," C:\\cc-toolchain-win\\ghdl-mcode-5.0.1-mingw64\\bin\\ghdl.exe")
-    tcm.add_tool_path("p_r"," C:\\cc-toolchain-win\\cc-toolchain-win\\bin\\p_r\\p_r.exe")
-    tcm.add_tool_path("yosys"," C:\\cc-toolchain-win\\cc-toolchain-win\\bin\\yosys\\yosys.exe")
     tcm.check_toolchain()
-    #tcm.set_toolchain_preference("direct")
-    #tcm.check_ghdl_yosys_link()
-   # tcm.check_tool_version("ghdl")
-    
-    #print(tcm.check_tool_version("lol"))
-    #tcm.check_toolchain()
-    ##tcm.set_config_path_structure()
-        

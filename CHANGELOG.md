@@ -5,6 +5,44 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-10
+
+### Added
+
+- **OSS CAD Suite GateMate flow** — Synthesis and implementation use standalone GHDL → Yosys `synth_gatemate -luttree -nomx8 -json` → `nextpnr-himbaechel` → `gmpack` `.bit`.
+- **`nextpnr_commands.py`** — Place & Route / bitstream manager for nextpnr-himbaechel + gmpack (replaces proprietary `p_r` for GUI implementation).
+- **`place_and_route_dialog.py`** — Expanded Place & Route settings UI: presets (Development / Timing Closure / Deep Optimization / Custom), device modes, SDC/frequency, seed modes, reports, Advanced options, and live command preview.
+- **Multi-seed Place & Route** — Iterate seeds with selection criteria (best slack / Fmax / wirelength); optional early stop when timing is met.
+- **Parallel multi-seed jobs** — Run concurrent nextpnr workers (`Parallel jobs`); progress window shows the current best seed when jobs > 1. Detected CPU core count is shown next to the control; Timing Closure and Deep Optimization presets default parallel jobs to core count.
+- **Multi-seed progress window** — Live progress bar, per-seed timing/utilization from `*_report_seed_XXX.json`, side-by-side `_placed.svg` / `_routed.svg` previews, and results table.
+- **OSS CAD Suite run environment** — Tool probes and nextpnr/gmpack subprocesses prepend OSS CAD `bin` + `lib` on PATH so Windows DLL loads succeed.
+- **Configuration tool versions** — Individual Tool Status shows short version strings for GHDL, Yosys, nextpnr-himbaechel, gmpack, etc.
+- **GateMate synth flow Advanced Check** — Validates standalone GHDL + Yosys `synth_gatemate` (replaces obsolete GHDL-Yosys plugin check for OSS CAD Yosys).
+- **Configurable tool paths** — Tool locations come from PATH, `YOSYSHQ_ROOT`, or user Configuration (no hardcoded install directories).
+- **Duplicate entity support** — Synthesis tree lists entities as `Entity (filename.vhdl)` so identical entity names in different files are selectable independently.
+- **ZI board Test Connection `VERSION`** — Queries the STM32 `VERSION` console command and shows the firmware reply in the board selection results pane.
+- **Synthesis strategy command preview** — Shows the GHDL + Yosys commands that will run.
+
+### Changed
+
+- Toolchain status / path editor tracks `ghdl`, `yosys`, `nextpnr_himbaechel`, `gmpack` (and optional `openFPGALoader`) instead of legacy `p_r`.
+- GateMate synthesis no longer requires the Yosys GHDL plugin.
+- Place & Route eligibility accepts `*_synth.json` netlists from the OSS CAD flow.
+- nextpnr log severity prefers tool `Info:` / `Warning:` / `ERROR:` prefixes (avoids false ERRORs on lines like `fout error 0.000%`).
+- Board Selection dialog cleanup: single combined header line; removed redundant “Selected: …” label under the board dropdown.
+
+### Removed
+
+- **Add Custom Board** button from the Upload tab.
+- Automatic generation of template `.ccf` constraint files on project create.
+
+### Fixed
+
+- **View X Logs** after project create / synth / P&R — log viewers resolve the active project path and fall back to `logs/` on disk; Yosys/PnR loggers rebind when the project changes.
+- **Toolchain structure spam** — Silenced repeated “toolchain structure already exists… Skipping.” noise.
+- **Synthesis strategy dialog crash** — Command preview no longer depends on missing hierarchy helpers / uninitialized signals.
+- **nextpnr / gmpack “Not available”** on Configuration when OSS CAD DLLs were not on PATH.
+
 ## [0.3.4] - 2026-07-10
 
 ### Fixed

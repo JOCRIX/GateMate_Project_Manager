@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .toolchain_manager import ToolChainManager
-from .zi_fpga_loader import load_bitstream, normalize_comport, VERSION
+from .zi_fpga_loader import load_bitstream, normalize_comport, query_firmware_version, VERSION
 
 
 class ZiFPGALoaderManager(ToolChainManager):
@@ -32,6 +32,7 @@ class ZiFPGALoaderManager(ToolChainManager):
         self.board_identifier = board_identifier
         self.board_config = self._load_board_config()
         self.last_error: Optional[str] = None
+        self.last_firmware_version: Optional[str] = None
 
         self.impl_dir = self.config["project_structure"]["impl"]
         self.bitstream_dir = self.impl_dir["bitstream"][0]
@@ -80,23 +81,29 @@ class ZiFPGALoaderManager(ToolChainManager):
             return False
 
     def detect_devices(self) -> bool:
-        """Test whether the configured COM port is accessible."""
+        """Open the configured COM port and query the STM32 ``VERSION`` command."""
         if not self.is_available():
             self.last_error = "pyserial is not installed"
+            self.last_firmware_version = None
             self.loader_logger.error(self.last_error)
             return False
 
         port = normalize_comport(self.get_com_port())
-        self.loader_logger.info(f"Testing serial connection on {port}")
+        self.loader_logger.info(f"Testing serial connection on {port} (VERSION)")
+        self.last_firmware_version = None
 
         try:
-            import serial
-
-            with serial.Serial(port, timeout=1.0) as ser:
-                self.loader_logger.info(f"Serial port {port} opened successfully")
-                return True
+            version = query_firmware_version(
+                port=port,
+                timeout=self.get_serial_timeout(),
+                log_fn=lambda msg: self.loader_logger.info(msg),
+            )
+            self.last_firmware_version = version
+            self.last_error = None
+            self.loader_logger.info(f"Serial port {port} OK — VERSION: {version}")
+            return True
         except Exception as e:
-            self.last_error = f"Could not open {port}: {e}"
+            self.last_error = f"Could not query VERSION on {port}: {e}"
             self.loader_logger.error(self.last_error)
             return False
 

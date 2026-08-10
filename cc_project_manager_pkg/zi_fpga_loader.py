@@ -41,6 +41,45 @@ def read_required_line(ser: serial.Serial, what: str) -> bytes:
     return line
 
 
+def query_firmware_version(
+    port: str,
+    timeout: float = 3.0,
+    settle_s: float = 1.0,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Send the STM32 ``VERSION`` console command and return the reply text.
+
+    Firmware (ZI-0001 FPGA Loader) responds with a line such as::
+
+        ZI-0001 FPGA Loader v1.0
+    """
+    def emit(message: str) -> None:
+        if log_fn:
+            log_fn(message)
+
+    with serial.Serial(port, timeout=timeout) as ser:
+        # CDC/ACM often needs a short settle after open (same as LOAD path)
+        if settle_s > 0:
+            time.sleep(settle_s)
+        ser.reset_input_buffer()
+        ser.reset_output_buffer()
+
+        cmd = b"VERSION\r\n"
+        emit(f"TX: {repr(cmd)}")
+        ser.write(cmd)
+        ser.flush()
+
+        reply = read_required_line(ser, "VERSION reply")
+        emit(f"RX: {repr(reply)}")
+
+        text = reply.decode(errors="replace").strip()
+        if not text:
+            raise RuntimeError("Empty reply to VERSION command")
+        if text.upper().startswith("ERR:"):
+            raise RuntimeError(f"VERSION command failed: {text}")
+        return text
+
+
 def load_bitstream(
     port: str,
     bitstream_path: Path,

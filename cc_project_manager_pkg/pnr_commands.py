@@ -152,15 +152,31 @@ class PnRCommands(ToolChainManager):
         self.pnr_logger = logging.getLogger("PnRCommands")
         self.pnr_logger.setLevel(logging.DEBUG)
         self.pnr_logger.propagate = False  # Prevent propagation to root logger
+        self._pnr_bound_log_path = None
 
-        if not self.pnr_logger.handlers:
-            # Get log file path
-            log_path = os.path.normpath(os.path.join(self.config["project_structure"]["logs"][0], "pnr_commands.log"))
-            file_handler = logging.FileHandler(log_path)
+        expected_log = os.path.normpath(
+            os.path.join(self.config["project_structure"]["logs"][0], "pnr_commands.log")
+        )
+        handlers_outdated = False
+        for handler in self.pnr_logger.handlers:
+            base = getattr(handler, "baseFilename", None)
+            if base and os.path.normpath(base) != expected_log:
+                handlers_outdated = True
+                break
+
+        if not self.pnr_logger.handlers or handlers_outdated:
+            for handler in self.pnr_logger.handlers[:]:
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+                self.pnr_logger.removeHandler(handler)
+
+            file_handler = logging.FileHandler(expected_log)
             formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             file_handler.setFormatter(formatter)
             self.pnr_logger.addHandler(file_handler)
-            # Add pnr_commands.log to project configuration
+            self._pnr_bound_log_path = expected_log
             self._add_pnr_log()
 
         if strategy not in self.IMPLEMENTATION_STRATEGIES:

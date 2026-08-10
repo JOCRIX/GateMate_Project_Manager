@@ -389,32 +389,7 @@ class CreateStructure:
         create_directories_from_config(config_file["project_structure"])
         
         self._log("info", f"Project structure specified in project {config_path} created successfully.")
-        
-        # Create default constraint file for the project
-        self._create_default_constraint_file()
-
-    def _create_default_constraint_file(self):
-        """Create a default constraint file for the project using PnRCommands."""
-        try:
-            self._log("info", "Creating default constraint file for the project")
-            
-            # Import PnRCommands to create the constraint file
-            from .pnr_commands import PnRCommands
-            
-            # Create PnRCommands instance to generate constraint file
-            pnr = PnRCommands()
-            
-            # Create the default constraint file
-            success = pnr.create_default_constraint_file()
-            
-            if success:
-                self._log("info", f"Successfully created default constraint file: {pnr.get_default_constraint_file_path()}")
-            else:
-                self._log("warning", "Failed to create default constraint file")
-                
-        except Exception as e:
-            self._log("error", f"Error creating default constraint file: {e}")
-            # Don't fail the entire project creation if constraint file creation fails
+        # Constraint files are user-provided; no template .ccf is generated on project create.
 
 
 if __name__ == "__main__":

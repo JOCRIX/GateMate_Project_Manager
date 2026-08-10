@@ -130,14 +130,25 @@ class YosysCommands(ToolChainManager):
         self.yosys_logger = logging.getLogger("YosysCommands")
         self.yosys_logger.setLevel(logging.DEBUG)
         self.yosys_logger.propagate = False  # Prevent propagation to root logger
+        self._yosys_bound_log_path = None
 
-        if not self.yosys_logger.handlers:
-            # Get log file path
-            log_path = os.path.normpath(os.path.join(self.config["project_structure"]["logs"][0], "yosys_commands.log"))
+        if not self.yosys_logger.handlers or self._yosys_log_path_outdated():
+            # Rebind handlers so a new/loaded project always gets the correct log file
+            for handler in self.yosys_logger.handlers[:]:
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+                self.yosys_logger.removeHandler(handler)
+
+            log_path = os.path.normpath(
+                os.path.join(self.config["project_structure"]["logs"][0], "yosys_commands.log")
+            )
             file_handler = logging.FileHandler(log_path)
             formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             file_handler.setFormatter(formatter)
             self.yosys_logger.addHandler(file_handler)
+            self._yosys_bound_log_path = log_path
             # Add yosys_commands.log to project configuration
             self._add_yosys_log()
 
@@ -189,6 +200,23 @@ class YosysCommands(ToolChainManager):
         
         # ToolChainManager instantiation report
         self._report_instantiation()
+
+    def _yosys_log_path_outdated(self) -> bool:
+        """True when logger is bound to a different project's yosys log file."""
+        try:
+            expected = os.path.normpath(
+                os.path.join(self.config["project_structure"]["logs"][0], "yosys_commands.log")
+            )
+        except Exception:
+            return True
+        bound = getattr(self, "_yosys_bound_log_path", None)
+        if bound and os.path.normpath(bound) != expected:
+            return True
+        for handler in self.yosys_logger.handlers:
+            base = getattr(handler, "baseFilename", None)
+            if base and os.path.normpath(base) != expected:
+                return True
+        return False
     
     def _load_custom_synthesis_strategies(self):
         """Load custom synthesis strategies from synthesis_options.yml file.
@@ -256,26 +284,29 @@ class YosysCommands(ToolChainManager):
         """
         Determine how to access the Yosys binary based on the configured toolchain mode.
 
-        Returns:
-            str: Path or command used to invoke Yosys.
+        Prefers an absolute configured path when available; otherwise PATH.
         """
-        # Get yosys access mode
-        yosys_access = ""
-        if self.tool_access_mode == "PATH":  # Yosys should be accessed through PATH
-            yosys_access = "yosys"  # Accesses the yosys binary through PATH
-            self.yosys_logger.info(f"Yosys is accessing binary through {yosys_access}")
-        elif self.tool_access_mode == "DIRECT":  # Yosys should be accessed directly
-            toolchain_path = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-            yosys_access = toolchain_path.get("yosys", "")
-            self.yosys_logger.info(f"Yosys is accessing binary directly through {yosys_access}")
-        elif self.tool_access_mode == "UNDEFINED":
-            self.yosys_logger.error(f"Yosys access mode is undefined. There is a problem in toolchain manager.")
-        else:
-            # Fallback for any unexpected values - default to PATH access
-            self.yosys_logger.warning(f"Unexpected tool access mode '{self.tool_access_mode}', defaulting to PATH access")
-            yosys_access = "yosys"
+        cmd = self.get_tool_command("yosys")
+        if cmd and os.path.isabs(cmd) and os.path.exists(cmd):
+            self.yosys_logger.info(f"Yosys accessing binary through {cmd}")
+            return cmd
 
-        return yosys_access
+        toolchain_path = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
+        direct = toolchain_path.get("yosys", "") or ""
+        if direct and os.path.exists(direct):
+            self.yosys_logger.info(f"Yosys accessing binary through {direct}")
+            return direct
+
+        if self.tool_access_mode == "PATH" or not cmd:
+            self.yosys_logger.info("Yosys accessing binary through PATH name: yosys")
+            return "yosys"
+
+        if cmd:
+            self.yosys_logger.info(f"Yosys accessing binary through {cmd}")
+            return cmd
+
+        self.yosys_logger.error("Yosys access mode is undefined or path missing")
+        return "yosys"
 
     def _add_yosys_log(self):
         """Add Yosys commands log file path to the project configuration.
@@ -503,42 +534,41 @@ class YosysCommands(ToolChainManager):
             self.yosys_logger.error(f"Failed to add synthesis_options_file to project configuration: {e}")
             return False
 
-    def _get_vhdl_files(self) -> List[str]:
+    def _get_vhdl_files(self, primary_file: Optional[str] = None) -> List[str]:
         """
         Get a list of VHDL files to synthesize from the project hierarchy.
-        
-        This internal method retrieves the VHDL file paths from the project 
-        hierarchy configuration. It collects files from the 'src' section and
-        optionally includes files from the 'top' section if they're not already
-        in the list.
-        
-        The method relies on a properly configured HDL project hierarchy in the
-        project configuration file. If the hierarchy doesn't exist, it will return
-        an empty list.
-        
-        The collected files include all source files needed for synthesis, but
-        typically exclude testbench files which are usually not synthesizable.
-        
-        Returns:
-            List[str]: List of absolute paths to VHDL files for synthesis
-            
-        Note:
-            This is an internal helper method used by the synthesis methods and
-            is not typically called directly by users.
+
+        Args:
+            primary_file: Optional absolute path of the selected source file.
+                When set, that file is placed first. If other project files
+                declare the same top entity, they are excluded to avoid GHDL
+                collisions when duplicate entity names exist across files.
         """
         vhdl_files = []
-        if self.check_hierarchy():
-            # Include source files
-            if "src" in self.config["hdl_project_hierarchy"]:
-                for file_name, file_path in self.config["hdl_project_hierarchy"]["src"].items():
+        hierarchy = self.config.get("hdl_project_hierarchy") if self.config else None
+        if isinstance(hierarchy, dict):
+            if "src" in hierarchy:
+                for file_name, file_path in hierarchy["src"].items():
                     vhdl_files.append(file_path)
                     
-            # Include top level file if it's different from src files
-            if "top" in self.config["hdl_project_hierarchy"]:
-                for file_name, file_path in self.config["hdl_project_hierarchy"]["top"].items():
+            if "top" in hierarchy:
+                for file_name, file_path in hierarchy["top"].items():
                     if file_path not in vhdl_files:
                         vhdl_files.append(file_path)
-                        
+        else:
+            self.yosys_logger.warning(
+                "Project HDL hierarchy is not set; synthesis may have no VHDL sources."
+            )
+
+        if primary_file:
+            primary_norm = os.path.normpath(primary_file)
+            # Ensure selected file is included and first
+            others = [f for f in vhdl_files if os.path.normpath(f) != primary_norm]
+            if os.path.exists(primary_norm):
+                vhdl_files = [primary_norm] + others
+            else:
+                self.yosys_logger.warning(f"Primary VHDL file not found: {primary_file}")
+
         return vhdl_files
 
     def analyze_and_elaborate_vhdl(self, vhdl_files: List[str], top_entity: str) -> bool:
@@ -614,7 +644,13 @@ class YosysCommands(ToolChainManager):
         self.yosys_logger.debug(f"Command: {' '.join(read_cmd)}")
         
         try:
-            result = subprocess.run(read_cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(
+                read_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=self.get_tool_run_env(),
+            )
             self.yosys_logger.info(f"Successfully analyzed and elaborated VHDL files")
             if result.stdout:
                 self.yosys_logger.debug(f"Yosys output: {result.stdout}")
@@ -737,7 +773,13 @@ class YosysCommands(ToolChainManager):
         self.yosys_logger.debug(f"Yosys command: {' '.join(yosys_cmd)}")
         
         try:
-            result = subprocess.run(yosys_cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(
+                yosys_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=self.get_tool_run_env(),
+            )
             
             # Log detailed Yosys output for synthesis log viewing
             if result.stdout:
@@ -776,489 +818,286 @@ class YosysCommands(ToolChainManager):
                 self.yosys_logger.error("=== END YOSYS STDERR ===")
             return False
 
-    def synthesize_gatemate(self, top_entity: str, options: Optional[List[str]] = None) -> bool:
-        """
-        Synthesize a VHDL design for the GateMate FPGA using Yosys.
-        
-        This function analyzes and elaborates VHDL files and runs Yosys with GateMate-specific synthesis 
-        commands to create a netlist optimized specifically for the Cologne Chip GateMate FPGA.
-        It uses the synth_gatemate command which is specially designed for GateMate FPGAs and
-        provides better results than generic synthesis for this target.
-        
-        The Yosys command syntax used is:
-        
-            yosys -p "ghdl --std=08 --ieee=synopsys VHDL_FILES -e TOP_ENTITY;
-                     synth_gatemate -top TOP_ENTITY -vlog OUTPUT_VERILOG;
-                     write_verilog -noattr NETLIST_PATH" [USER_OPTIONS]
-                     
-        Where: 
-        - VHDL_FILES are the input design files
-        - TOP_ENTITY is the name of the top-level entity to synthesize
-        - OUTPUT_VERILOG is the path to the output Verilog file
-        - NETLIST_PATH is the path to the technology-mapped netlist file
-        - USER_OPTIONS are additional command-line options provided via the options parameter
-        
+    def synthesize_gatemate(
+        self,
+        top_entity: str,
+        options: Optional[List[str]] = None,
+        primary_file: Optional[str] = None,
+    ) -> bool:
+        """Synthesize VHDL for GateMate using standalone GHDL then Yosys.
+
+        New OSS CAD Suite flow:
+            1) ``ghdl synth ... --out=verilog -e TOP`` -> ASCII ``{TOP}_synth.v``
+            2) ``yosys -p "read_verilog ...; synth_gatemate -top TOP -luttree -nomx8 -json ..."``
+               -> ``{TOP}_synth.json``
+
         Args:
-            top_entity: Name of the top-level entity to synthesize
-            options: Additional command-line options for Yosys as a list of strings. These are 
-                     appended to the command and are independent of the synthesis strategy.
-            
-        Common synth_gatemate options include:
-            `-top TOP`: Specify the top module
-            `-vlog FILE`: Write Verilog netlist to file
-            `-run <from_step>:<to_step>`: Run only selected parts of the flow
-            `-nodffe`: Do not use flip-flops with enable
-            `-nobram`: Do not use block RAMs, use logic instead
-            `-nomx8`: Do not use MX8 cells, use logic instead
-            `-nolutram`: Do not use LUT RAMs, use logic instead
-            `-nobram-ports`: Expose individual BRAM ports
-            `-noalu`: Do not use ALU cells, use logic instead
-            `-no-rw-check`: Skip read/write port checking for RAMs
-            
-        Returns:
-            bool: True if synthesis successful, False otherwise
-            
-        Example:
-            ```python
-            yosys = YosysCommands()
-            # Basic GateMate-specific synthesis with default settings (balanced strategy)
-            yosys.synthesize_gatemate("counter")
-            
-            # GateMate-specific synthesis optimized for area
-            yosys = YosysCommands(strategy="area")
-            yosys.synthesize_gatemate("counter")
-            
-            # GateMate synthesis with additional Yosys command-line options
-            yosys.synthesize_gatemate("counter", options=["-q", "-l", "gatemate_synth.log"])
-            
-            # Combining strategy and custom options
-            yosys = YosysCommands(strategy="timing")
-            yosys.synthesize_gatemate("counter", options=["-v", "-T"]) # Verbose with timing info
-            ```
+            top_entity: Top-level VHDL entity name
+            options: Extra Yosys CLI options
+            primary_file: Optional selected VHDL source path (helps with duplicate entities)
         """
-        # Ensure the synth directory exists
         os.makedirs(self.synth_dir, exist_ok=True)
-        
-        # Ensure the netlist directory exists
         netlist_dir = self.config["project_structure"]["impl"]["netlist"][0]
         os.makedirs(netlist_dir, exist_ok=True)
-            
-        # Get list of VHDL files to synthesize
-        vhdl_files = self._get_vhdl_files()
+
+        vhdl_files = self._get_vhdl_files(primary_file=primary_file)
         if not vhdl_files:
             self.yosys_logger.error("No VHDL files found for synthesis")
             return False
-            
-        # Check if any files have spaces - if so, we'll use temporary directory approach
-        files_with_spaces = any(" " in file for file in vhdl_files)
-        temp_dir_to_cleanup = None
-        
-        # Import shutil for file operations if needed
-        if files_with_spaces:
-            import shutil
-        
 
-        if files_with_spaces:
-            # For paths with spaces, copy files to temporary directory without spaces
-            # This completely avoids all quoting/escaping issues
-            self.yosys_logger.info("Files with spaces detected - copying to temporary directory")
-            import tempfile
-            import shutil
-            
-            # Create a temporary directory without spaces
-            temp_dir = tempfile.mkdtemp(prefix="yosys_temp_")
-            self.yosys_logger.info(f"Created temporary directory: {temp_dir}")
-            
-            # Copy VHDL files to temp directory and track mappings
-            vhdl_files_temp = []
-            file_mappings = []
-            
-            for file in vhdl_files:
-                if os.path.exists(file):
-                    # Get just the filename
-                    filename = os.path.basename(file)
-                    temp_file_path = os.path.join(temp_dir, filename)
-                    
-                    # Copy the file
-                    shutil.copy2(file, temp_file_path)
-                    vhdl_files_temp.append(temp_file_path)
-                    file_mappings.append((file, temp_file_path))
-                    self.yosys_logger.info(f"Copied: {file} -> {temp_file_path}")
-                else:
-                    self.yosys_logger.error(f"Source file not found: {file}")
-                    return False
-            
-            vhdl_files_str = " ".join(vhdl_files_temp)
-            self.yosys_logger.info(f"Using temporary VHDL files: {vhdl_files_str}")
-            
-            # Store temp_dir for cleanup later
-            temp_dir_to_cleanup = temp_dir
-        else:
-            # For paths without spaces, use the normal approach
-            vhdl_files_str = " ".join(vhdl_files)
-            temp_dir_to_cleanup = None
-        
-        # Output file paths
+        # When a primary file is selected, prefer synthesizing that file alone if
+        # other files declare the same entity name (avoids GHDL collisions).
+        if primary_file and os.path.exists(primary_file):
+            try:
+                import re
+                with open(primary_file, "r", encoding="utf-8", errors="replace") as f:
+                    primary_content = f.read()
+                primary_entities = {
+                    m.lower()
+                    for m in re.findall(r"entity\s+(\w+)\s+is", primary_content, re.IGNORECASE)
+                }
+                filtered = [primary_file]
+                for path in vhdl_files:
+                    if os.path.normpath(path) == os.path.normpath(primary_file):
+                        continue
+                    try:
+                        with open(path, "r", encoding="utf-8", errors="replace") as f:
+                            content = f.read()
+                        entities = {
+                            m.lower()
+                            for m in re.findall(r"entity\s+(\w+)\s+is", content, re.IGNORECASE)
+                        }
+                        if primary_entities.intersection(entities):
+                            self.yosys_logger.warning(
+                                f"Excluding {os.path.basename(path)} due to duplicate entity name(s) "
+                                f"with selected file {os.path.basename(primary_file)}"
+                            )
+                            continue
+                    except Exception:
+                        pass
+                    filtered.append(path)
+                vhdl_files = filtered
+            except Exception as e:
+                self.yosys_logger.debug(f"Could not filter duplicate entities: {e}")
+
         verilog_path = os.path.join(self.synth_dir, f"{top_entity}_synth.v")
+        json_path = os.path.join(self.synth_dir, f"{top_entity}_synth.json")
         netlist_path = os.path.join(netlist_dir, f"{top_entity}.v")
-        
-        # Handle output paths - use temp directory if input files have spaces
-        if files_with_spaces:
-            # Use temporary directory for output files too
-            verilog_filename = f"{top_entity}_synth.v"
-            netlist_filename = f"{top_entity}.v"
-            
-            verilog_path_temp = os.path.join(temp_dir, verilog_filename)
-            netlist_path_temp = os.path.join(temp_dir, netlist_filename)
-            
-            verilog_path_final = verilog_path_temp
-            netlist_path_final = netlist_path_temp
-            
-            self.yosys_logger.info(f"Temporary verilog output: {verilog_path_final}")
-            self.yosys_logger.info(f"Temporary netlist output: {netlist_path_final}")
-        else:
-            verilog_path_final = verilog_path
-            netlist_path_final = netlist_path
-        
-        # Build the complete Yosys command script with all steps
-        # For GateMate, we use the synth_gatemate command which is a specialized
-        # synthesis command for GateMate FPGAs, followed by strategy-specific optimizations
-        commands = [
-            f"ghdl {self.vhdl_std} {self.ieee_lib} {vhdl_files_str} -e {top_entity};",
-            f"synth_gatemate -top {top_entity} -vlog {verilog_path_final};",
+
+        ghdl_cmd = self.get_tool_command("ghdl")
+        if not ghdl_cmd:
+            self.yosys_logger.error("GHDL tool command is not available")
+            return False
+
+        # Map YosysCommands VHDL std / ieee settings to GHDL CLI flags
+        std_map = {
+            "--std=08": "08",
+            "--std=93": "93",
+            "--std=93c": "93c",
+            "08": "08",
+            "93": "93",
+            "93c": "93c",
+        }
+        std_flag = std_map.get(self.vhdl_std, "08")
+        ieee_flag = None
+        if self.ieee_lib and "synopsys" in str(self.ieee_lib):
+            ieee_flag = "synopsys"
+        elif self.ieee_lib and "mentor" in str(self.ieee_lib):
+            ieee_flag = "mentor"
+
+        # Stage 1: standalone GHDL VHDL -> ASCII Verilog
+        ghdl_args = [
+            ghdl_cmd,
+            "synth",
+            f"--std={std_flag}",
+            "-fexplicit",
         ]
-        
-        # Add strategy-specific optimization commands after GateMate synthesis
-        # Skip the first command (synth) since we use synth_gatemate instead
-        strategy_commands = [cmd.format(top=top_entity) + ";" for cmd in self.SYNTHESIS_STRATEGIES[self.strategy][1:]]
-        commands.extend(strategy_commands)
-        
-        # Add final output command
-        commands.append(f"write_verilog -noattr {netlist_path_final};")
-        
-        # Log the strategy being applied
-        self.yosys_logger.info(f"Applying '{self.strategy}' strategy optimizations after GateMate synthesis")
-        self.yosys_logger.debug(f"Strategy commands: {strategy_commands}")
-        
-        # Construct the full command
-        yosys_cmd = [self.yosys_access, "-p", " ".join(commands)]
-        
-        # Debug: Check if yosys executable exists and is accessible
-        self.yosys_logger.debug(f"Yosys executable path: {repr(self.yosys_access)}")
-        if os.path.sep in self.yosys_access:  # Full path
-            if not os.path.exists(self.yosys_access):
-                self.yosys_logger.error(f"Yosys executable not found at: {self.yosys_access}")
-            elif not os.access(self.yosys_access, os.X_OK):
-                self.yosys_logger.error(f"Yosys executable not executable: {self.yosys_access}")
-        else:  # PATH-based executable
-            import shutil
-            if not shutil.which(self.yosys_access):
-                self.yosys_logger.error(f"Yosys executable '{self.yosys_access}' not found in PATH")
-        
+        if ieee_flag:
+            ghdl_args.append("-fsynopsys")
+        ghdl_args.append("--out=verilog")
+        ghdl_args.extend(vhdl_files)
+        ghdl_args.extend(["-e", top_entity])
+
+        self.yosys_logger.info("=" * 60)
+        self.yosys_logger.info("STAGE 1: GHDL VHDL -> Verilog (ASCII)")
+        self.yosys_logger.info(f"GHDL command: {' '.join(ghdl_args)}")
+        self.yosys_logger.info(f"Output: {verilog_path}")
+
+        try:
+            result = subprocess.run(
+                ghdl_args,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=self.get_tool_run_env(),
+            )
+            # Verilog is on stdout — do not dump the whole netlist into the log
+            if result.stderr:
+                for line in result.stderr.splitlines():
+                    if line.strip():
+                        level = self.yosys_logger.warning
+                        if "is not bound" in line.lower():
+                            level = self.yosys_logger.info
+                        level(f"GHDL: {line}")
+
+            if result.returncode != 0:
+                self.yosys_logger.error(f"GHDL synth failed with exit code {result.returncode}")
+                if result.stdout:
+                    self.yosys_logger.error(result.stdout[-2000:])
+                return False
+
+            verilog_text = result.stdout if result.stdout is not None else ""
+            if not verilog_text.strip():
+                self.yosys_logger.error("GHDL produced empty Verilog output")
+                return False
+
+            with open(verilog_path, "w", encoding="ascii", errors="replace", newline="\n") as f:
+                f.write(verilog_text)
+                if not verilog_text.endswith("\n"):
+                    f.write("\n")
+
+            self.yosys_logger.info(f"Wrote ASCII Verilog: {verilog_path} ({len(verilog_text)} chars)")
+        except Exception as e:
+            self.yosys_logger.error(f"GHDL synth invocation failed: {e}")
+            return False
+
+        # Stage 2: Yosys GateMate synthesis -> JSON
+        # Cologne Chip recommended recipe always includes -luttree -nomx8.
+        if not self.yosys_access:
+            self.yosys_logger.error("Yosys tool command is not available")
+            return False
+
+        def _ys_quote(path: str) -> str:
+            # Yosys -p scripts treat spaces specially; quote all absolute paths.
+            return f'"{path}"' if path else path
+
+        yosys_script = (
+            f"read_verilog {_ys_quote(verilog_path)}; "
+            f"synth_gatemate -top {top_entity} -luttree -nomx8 -json {_ys_quote(json_path)}; "
+            f"write_verilog -noattr {_ys_quote(netlist_path)}"
+        )
+        yosys_cmd = [self.yosys_access, "-p", yosys_script]
         if options:
             yosys_cmd.extend(options)
-            
-        self.yosys_logger.info(f"Running GateMate synthesis for {top_entity}")
-        self.yosys_logger.debug(f"Yosys command: {' '.join(yosys_cmd)}")
-        
-        # Debug: Log the exact command components
-        self.yosys_logger.debug(f"Command components:")
-        for i, component in enumerate(yosys_cmd):
-            self.yosys_logger.debug(f"  [{i}]: {repr(component)}")
-        
-        # Debug: Check command length
-        full_cmd_str = ' '.join(yosys_cmd)
-        self.yosys_logger.debug(f"Full command length: {len(full_cmd_str)} characters")
-        if len(full_cmd_str) > 8191:
-            self.yosys_logger.warning(f"Command line is very long ({len(full_cmd_str)} chars), may exceed Windows limit")
-        
-        # Use script file if command line is too long OR if there are spaces in file paths
-        use_script_file = len(full_cmd_str) > 8000 or files_with_spaces
-        script_cmd = None
-        
+
+        self.yosys_logger.info("=" * 60)
+        self.yosys_logger.info("STAGE 2: Yosys synth_gatemate -> JSON (-luttree -nomx8)")
+        self.yosys_logger.info(f"Yosys command: {' '.join(yosys_cmd)}")
+        self.yosys_logger.info(f"JSON output: {json_path}")
+
         try:
-            
-            if use_script_file:
-                if files_with_spaces:
-                    self.yosys_logger.info("File paths contain spaces, using temporary script file to avoid quoting issues")
-                else:
-                    self.yosys_logger.info("Command line too long, using temporary script file")
-                    
-                import tempfile
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.ys', delete=False) as script_file:
-                    script_content = " ".join(commands)
-                    script_file.write(script_content)
-                    script_file_path = script_file.name
-                    
-                    # Debug: Log the script content for troubleshooting
-                    self.yosys_logger.debug(f"Script file content: {script_content}")
-                    if files_with_spaces:
-                        self.yosys_logger.info(f"Files with spaces detected: {[f for f in vhdl_files if ' ' in f]}")
-                        self.yosys_logger.info(f"VHDL files string: {vhdl_files_str}")
-                        self.yosys_logger.info(f"Verilog output: {verilog_path_final}")
-                        self.yosys_logger.info(f"Netlist output: {netlist_path_final}")
-                
-                try:
-                    # Run yosys with script file
-                    script_cmd = [self.yosys_access, "-s", script_file_path]
-                    if options:
-                        script_cmd.extend(options)
-                    self.yosys_logger.debug(f"Using script file: {script_file_path}")
-                    self.yosys_logger.debug(f"Script command: {' '.join(script_cmd)}")
-                    self.yosys_logger.debug(f"Script content: {' '.join(commands)}")
-                    result = subprocess.run(script_cmd, check=True, capture_output=True, text=True)
-                finally:
-                    # Clean up temporary file
-                    try:
-                        os.unlink(script_file_path)
-                    except:
-                        pass
-            else:
-                result = subprocess.run(yosys_cmd, check=True, capture_output=True, text=True)
-            
-            # Log detailed Yosys output for synthesis log viewing
+            result = subprocess.run(
+                yosys_cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=self.get_tool_run_env(),
+            )
             if result.stdout:
                 self.yosys_logger.info("=== YOSYS GATEMATE SYNTHESIS OUTPUT ===")
-                # Log each line of stdout separately for better formatting
-                for line in result.stdout.strip().split('\n'):
+                for line in result.stdout.splitlines():
                     if line.strip():
                         self.yosys_logger.info(f"YOSYS: {line}")
                 self.yosys_logger.info("=== END YOSYS GATEMATE OUTPUT ===")
-            
             if result.stderr:
-                self.yosys_logger.warning("=== YOSYS GATEMATE STDERR ===")
-                for line in result.stderr.strip().split('\n'):
+                for line in result.stderr.splitlines():
                     if line.strip():
                         self.yosys_logger.warning(f"YOSYS STDERR: {line}")
-                self.yosys_logger.warning("=== END YOSYS GATEMATE STDERR ===")
-            
+
+            if result.returncode != 0:
+                self.yosys_logger.error(f"Yosys GateMate synthesis failed with exit code {result.returncode}")
+                return False
+
+            if not os.path.exists(json_path):
+                self.yosys_logger.error(f"Expected JSON netlist was not created: {json_path}")
+                return False
+
             self.yosys_logger.info(f"Successfully synthesized {top_entity} for GateMate")
-            
-            # If we used temporary files, copy outputs back to original locations
-            if files_with_spaces and temp_dir_to_cleanup:
-                try:
-                    # Copy output files back to original locations
-                    if os.path.exists(verilog_path_final):
-                        shutil.copy2(verilog_path_final, verilog_path)
-                        self.yosys_logger.info(f"Copied verilog output: {verilog_path_final} -> {verilog_path}")
-                    
-                    if os.path.exists(netlist_path_final):
-                        shutil.copy2(netlist_path_final, netlist_path)
-                        self.yosys_logger.info(f"Copied netlist output: {netlist_path_final} -> {netlist_path}")
-                    
-                    # Clean up temporary directory
-                    shutil.rmtree(temp_dir_to_cleanup)
-                    self.yosys_logger.info(f"Cleaned up temporary directory: {temp_dir_to_cleanup}")
-                    
-                except Exception as e:
-                    self.yosys_logger.warning(f"Error during cleanup: {e}")
-            
-            self.yosys_logger.info(f"Generated Verilog output: {verilog_path}")
-            self.yosys_logger.info(f"Generated netlist: {netlist_path}")
+            self.yosys_logger.info(f"Generated Verilog: {verilog_path}")
+            self.yosys_logger.info(f"Generated JSON: {json_path}")
+            if os.path.exists(netlist_path):
+                self.yosys_logger.info(f"Generated tech-mapped netlist: {netlist_path}")
             return True
-        except subprocess.CalledProcessError as e:
-            self.yosys_logger.error(f"GateMate synthesis failed: {e}")
-            if use_script_file:
-                self.yosys_logger.error(f"Script command that failed: {' '.join(script_cmd)}")
-                self.yosys_logger.error(f"Script content that failed: {' '.join(commands)}")
-            else:
-                self.yosys_logger.error(f"Command that failed: {' '.join(yosys_cmd)}")
-            
-            # Check for common path-related issues
-            path_issue_detected = False
-            if e.stderr:
-                stderr_text = e.stderr.lower()
-                if "unexpected extension for file" in stderr_text or "cannot find entity" in stderr_text:
-                    # Check if any VHDL files have spaces in their paths
-                    files_with_spaces = [f for f in vhdl_files if " " in f]
-                    if files_with_spaces:
-                        path_issue_detected = True
-                        self.yosys_logger.error("❌ PATH WITH SPACES DETECTED")
-                        self.yosys_logger.error("❌ Synthesis failed due to file paths containing spaces.")
-                        self.yosys_logger.error("❌ GHDL/Yosys has issues with file paths that contain spaces.")
-                        self.yosys_logger.error("")
-                        self.yosys_logger.error("🔍 PROBLEMATIC FILES:")
-                        for file_path in files_with_spaces:
-                            self.yosys_logger.error(f"   • {file_path}")
-                        self.yosys_logger.error("")
-                        self.yosys_logger.error("🔧 SOLUTIONS:")
-                        self.yosys_logger.error("   1. Move your project to a path without spaces")
-                        self.yosys_logger.error("      Example: C:\\Projects\\MyProject instead of C:\\My Projects\\MyProject")
-                        self.yosys_logger.error("   2. Rename directories to remove spaces")
-                        self.yosys_logger.error("      Example: 'New folder' → 'NewFolder' or 'New_folder'")
-                        self.yosys_logger.error("   3. Use underscores or hyphens instead of spaces")
-                        self.yosys_logger.error("   4. Avoid placing projects in Desktop or Documents folders with spaces")
-                        self.yosys_logger.error("")
-                        self.yosys_logger.error("📁 RECOMMENDED PROJECT LOCATIONS:")
-                        self.yosys_logger.error("   • C:\\Projects\\")
-                        self.yosys_logger.error("   • C:\\FPGA_Projects\\")
-                        self.yosys_logger.error("   • C:\\Development\\")
-                        self.yosys_logger.error("   • D:\\Projects\\ (if you have a D: drive)")
-            
-            if e.stdout:
-                self.yosys_logger.error("=== YOSYS GATEMATE STDOUT (FAILED) ===")
-                for line in e.stdout.strip().split('\n'):
-                    if line.strip():
-                        self.yosys_logger.error(f"YOSYS STDOUT: {line}")
-                self.yosys_logger.error("=== END YOSYS GATEMATE STDOUT ===")
-            if e.stderr:
-                self.yosys_logger.error("=== YOSYS GATEMATE STDERR (FAILED) ===")
-                for line in e.stderr.strip().split('\n'):
-                    if line.strip():
-                        self.yosys_logger.error(f"YOSYS STDERR: {line}")
-                self.yosys_logger.error("=== END YOSYS GATEMATE STDERR ===")
-                
-            if not path_issue_detected:
-                self.yosys_logger.error("")
-                self.yosys_logger.error("🔧 COMMON SYNTHESIS ISSUES:")
-                self.yosys_logger.error("   • Check that all VHDL files exist and are readable")
-                self.yosys_logger.error("   • Verify the top entity name matches the entity in your VHDL file")
-                self.yosys_logger.error("   • Ensure VHDL syntax is correct")
-                self.yosys_logger.error("   • Check that GHDL and Yosys are properly installed")
-                self.yosys_logger.error("   • Avoid file paths with spaces or special characters")
-            
-            # Clean up temporary directory if it was created
-            if files_with_spaces and temp_dir_to_cleanup:
-                try:
-                    shutil.rmtree(temp_dir_to_cleanup)
-                    self.yosys_logger.info(f"Cleaned up temporary directory after error: {temp_dir_to_cleanup}")
-                except Exception as cleanup_error:
-                    self.yosys_logger.warning(f"Error during error cleanup: {cleanup_error}")
-            
-            return False
-
-    def parse_entity_name_from_vhdl(self, vhdl_file_path):
-        """
-        Parse and return the first entity name found in a VHDL file.
-        
-        This function reads a VHDL file and extracts the entity name
-        by looking for the 'entity' keyword followed by an identifier.
-        
-        This is a utility method that can be used to automatically determine
-        the top entity name from a VHDL file, which is useful when automating
-        the synthesis process without having to manually specify entity names.
-        
-        The function performs a simple text-based search and does not perform
-        full VHDL parsing - it looks for lines that start with "entity " and
-        extracts the following word as the entity name. This approach works
-        for most standard VHDL files but may not handle all edge cases or
-        complex formatting.
-        
-        Args:
-            vhdl_file_path (str): Path to the VHDL file to parse
-            
-        Returns:
-            str or None: The entity name if found, None otherwise
-            
-        Example:
-            ```python
-            yosys = YosysCommands()
-            entity_name = yosys.parse_entity_name_from_vhdl("counter.vhd")
-            if entity_name:
-                print(f"Found entity: {entity_name}")
-                yosys.synthesize(entity_name)
-            else:
-                print("No entity found in the file")
-            ```
-        """
-        self.yosys_logger.info(f"Parsing entity name from VHDL file: {vhdl_file_path}")
-        
-        if not os.path.exists(vhdl_file_path):
-            self.yosys_logger.error(f"VHDL file not found: {vhdl_file_path}")
-            return None
-        
-        try:
-            self.yosys_logger.debug(f"Opening VHDL file for parsing: {vhdl_file_path}")
-            with open(vhdl_file_path, 'r', encoding='utf-8') as f:
-                line_number = 0
-                for line in f:
-                    line_number += 1
-                    line = line.strip()
-                    if line.lower().startswith('entity '):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            entity_name = parts[1]
-                            self.yosys_logger.info(f"Found entity '{entity_name}' at line {line_number}")
-                            return entity_name
-            
-            self.yosys_logger.warning(f"No entity declaration found in file: {vhdl_file_path}")
-            return None
         except Exception as e:
-            self.yosys_logger.error(f"Error parsing entity name from {vhdl_file_path}: {e}")
-            return None
-
-    def check_hierarchy(self) -> bool:
-        """
-        Check if the HDL hierarchy exists in the project configuration.
-        
-        This method verifies that the project configuration contains the necessary
-        'hdl_project_hierarchy' section, which defines the structure of HDL files
-        in the project. This hierarchy is required for automatic collection of
-        source files during synthesis.
-        
-        The HDL hierarchy in the project configuration typically looks like:
-        
-        ```yaml
-        hdl_project_hierarchy:
-          src:
-            StateMachineTest.vhd: /path/to/StateMachineTest.vhd
-          top:
-            top_entity.vhd: /path/to/top_entity.vhd
-          tb:
-            test_bench.vhd: /path/to/test_bench.vhd
-        ```
-        
-        This method logs an error and returns False if the hierarchy is not defined,
-        allowing calling methods to handle the error condition appropriately.
-        
-        Returns:
-            bool: True if the hierarchy exists, False otherwise
-            
-        Example:
-            ```python
-            yosys = YosysCommands()
-            if yosys.check_hierarchy():
-                # Proceed with synthesis
-                yosys.synthesize("my_entity")
-            else:
-                # Handle missing hierarchy
-                print("Please set up the HDL project hierarchy first")
-            ```
-        """
-        if "hdl_project_hierarchy" not in self.config:
-            self.yosys_logger.error("The project's HDL hierarchy has not been set. Check set_hierarchy settings.")
-            print("The project's HDL hierarchy has not been set. Check set_hierarchy settings.")
+            self.yosys_logger.error(f"Yosys GateMate synthesis invocation failed: {e}")
             return False
-        return True
+
+    def build_gatemate_command_preview(
+        self,
+        top_entity: str,
+        primary_file: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Build the exact GHDL + Yosys commands used by ``synthesize_gatemate``.
+
+        Returns a dict with ``ghdl``, ``yosys``, and ``combined`` preview strings.
+        Paths reflect the current project ``synth`` / ``impl/netlist`` directories.
+        """
+        vhdl_files = self._get_vhdl_files(primary_file=primary_file)
+        verilog_path = os.path.join(self.synth_dir, f"{top_entity}_synth.v")
+        json_path = os.path.join(self.synth_dir, f"{top_entity}_synth.json")
+        netlist_dir = self.config["project_structure"]["impl"]["netlist"][0]
+        netlist_path = os.path.join(netlist_dir, f"{top_entity}.v")
+
+        ghdl_cmd = self.get_tool_command("ghdl") or "ghdl"
+        std_map = {
+            "--std=08": "08",
+            "--std=93": "93",
+            "--std=93c": "93c",
+            "08": "08",
+            "93": "93",
+            "93c": "93c",
+        }
+        std_flag = std_map.get(self.vhdl_std, "08")
+        ghdl_parts = [ghdl_cmd, "synth", f"--std={std_flag}", "-fexplicit"]
+        if self.ieee_lib and "synopsys" in str(self.ieee_lib):
+            ghdl_parts.append("-fsynopsys")
+        ghdl_parts.append("--out=verilog")
+        ghdl_parts.extend(vhdl_files or ["<vhdl_sources...>"])
+        ghdl_parts.extend(["-e", top_entity])
+        # stdout is redirected to the Verilog file by the wrapper
+        ghdl_line = " ".join(ghdl_parts) + f"  >  {verilog_path}"
+
+        yosys_bin = self.yosys_access or "yosys"
+
+        def _ys_quote(path: str) -> str:
+            return f'"{path}"' if path else path
+
+        yosys_script = (
+            f"read_verilog {_ys_quote(verilog_path)}; "
+            f"synth_gatemate -top {top_entity} -luttree -nomx8 -json {_ys_quote(json_path)}; "
+            f"write_verilog -noattr {_ys_quote(netlist_path)}"
+        )
+        yosys_line = f'{yosys_bin} -p "{yosys_script}"'
+
+        combined = (
+            "# GateMate synthesis (Cologne Chip recipe)\n"
+            "# Stage 1 — standalone GHDL (not a Yosys plugin)\n"
+            f"{ghdl_line}\n\n"
+            "# Stage 2 — Yosys synth_gatemate with -luttree -nomx8\n"
+            f"{yosys_line}\n"
+        )
+        return {"ghdl": ghdl_line, "yosys": yosys_line, "combined": combined}
 
     def get_available_synthesized_designs(self) -> List[str]:
-        """Find available synthesized designs that can be used for place and route.
-        
-        Scans the synthesis output directory for synthesized netlist files (JSON and Verilog)
-        and returns a list of design names that have been successfully synthesized.
-        
-        Returns:
-            List[str]: List of design names (without extensions) that have synthesized netlists
+        """Find designs with a GateMate JSON netlist for place and route.
+
+        Only ``*_synth.json`` counts — a lone ``*_synth.v`` from the GHDL stage
+        is not sufficient for nextpnr-himbaechel.
         """
         designs = []
         try:
             if os.path.exists(self.synth_dir):
                 self.yosys_logger.info(f"Scanning for synthesized designs in {self.synth_dir}")
                 
-                # Look for synthesized JSON files (preferred by P&R)
                 for file in os.listdir(self.synth_dir):
                     if file.endswith('_synth.json'):
                         design_name = file.replace('_synth.json', '')
                         designs.append(design_name)
                         self.yosys_logger.info(f"Found synthesized design: {design_name} (JSON)")
-                        
-                # Also look for synthesized Verilog files as backup
-                for file in os.listdir(self.synth_dir):
-                    if file.endswith('_synth.v'):
-                        design_name = file.replace('_synth.v', '')
-                        if design_name not in designs:  # Avoid duplicates
-                            designs.append(design_name)
-                            self.yosys_logger.info(f"Found synthesized design: {design_name} (Verilog)")
                             
                 self.yosys_logger.info(f"Found {len(designs)} synthesized designs: {designs}")
             else:

@@ -17,10 +17,10 @@ def read_requirements():
 
 setup(
     name="cc-project-manager",
-    version="0.3.4",
+    version="0.4.0",
     author="JOCRIX",
     author_email="",  # Add email if desired
-    description="A comprehensive GateMate FPGA project management tool with GUI and CLI interfaces for GHDL, Yosys, and PnR workflows",
+    description="A comprehensive GateMate FPGA project management tool with GUI and CLI interfaces for GHDL, Yosys, nextpnr-himbaechel, and gmpack workflows",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     url="",  # Add repository URL if available
