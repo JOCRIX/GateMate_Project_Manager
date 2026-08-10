@@ -234,13 +234,20 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
 def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
     """Return True if ``exe_path`` runs with ``--version`` or ``-V`` successfully.
 
-    Prepends the executable's directory to PATH so Windows DLL side-by-side loads work.
+    Prepends the executable's directory and sibling ``lib/`` to PATH so OSS CAD
+    Suite Windows DLLs (needed by gtkwave.exe) can load.
     """
     if not exe_path or not os.path.isfile(exe_path):
         return False
     env = os.environ.copy()
     exe_dir = os.path.dirname(os.path.abspath(exe_path))
-    env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+    suite_root = os.path.dirname(exe_dir)
+    lib_dir = os.path.join(suite_root, "lib")
+    prefix = [exe_dir]
+    if os.path.isdir(lib_dir):
+        prefix.append(lib_dir)
+        env["YOSYSHQ_ROOT"] = suite_root if suite_root.endswith(os.sep) else suite_root + os.sep
+    env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
     for args in ([exe_path, "--version"], [exe_path, "-V"], [exe_path, "--help"]):
         try:
             result = subprocess.run(
@@ -251,7 +258,6 @@ def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
                 env=env,
                 cwd=exe_dir,
             )
-            # Many tools print version to stdout/stderr; accept exit 0 or help text.
             text = (result.stdout or "") + (result.stderr or "")
             if result.returncode == 0 or "usage" in text.lower() or "version" in text.lower():
                 return True
@@ -602,6 +608,7 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
                 try:
                     # DIRECT so Check Toolchain works before PATH refresh
                     sim.set_gtkwave_preference("DIRECT")
+                    tcm.set_tool_preference("gtkwave", "DIRECT")
                 except Exception:
                     pass
                 notes.append(f"Current project: gtkwave DIRECT -> {gtk}")

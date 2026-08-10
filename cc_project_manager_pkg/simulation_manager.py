@@ -12,6 +12,53 @@ class SimulationManager(GHDLCommands):
     
     # GTKWave tool definition - similar to ToolChainManager pattern
     __gtkwave_tool = {"gtkwave": "gtkwave.exe"} if os.name == 'nt' else {"gtkwave": "gtkwave"}
+
+    def _gtkwave_run_env(self, exe_path: Optional[str] = None) -> dict:
+        """Environment that can load OSS CAD Suite GTKWave (needs bin + lib on PATH)."""
+        try:
+            from .toolchain_manager import ToolChainManager
+            env = ToolChainManager().get_tool_run_env()
+        except Exception:
+            env = os.environ.copy()
+
+        if exe_path:
+            exe_dir = os.path.dirname(os.path.abspath(exe_path))
+            # Sibling lib/ next to bin/ (…/oss-cad-suite/bin/gtkwave.exe)
+            suite_root = os.path.dirname(exe_dir)
+            lib_dir = os.path.join(suite_root, "lib")
+            prefix = [exe_dir]
+            if os.path.isdir(lib_dir):
+                prefix.append(lib_dir)
+            env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
+            if os.path.isdir(lib_dir):
+                root = suite_root if suite_root.endswith(os.sep) else suite_root + os.sep
+                env.setdefault("YOSYSHQ_ROOT", root)
+                env.setdefault("GTK_EXE_PREFIX", suite_root)
+                env.setdefault("GTK_DATA_PREFIX", suite_root)
+        return env
+
+    def _probe_gtkwave(self, command: str) -> bool:
+        """Return True if GTKWave responds to --version or -V with the OSS CAD env."""
+        if not command:
+            return False
+        env = self._gtkwave_run_env(command if os.path.isfile(command) else None)
+        cwd = os.path.dirname(command) if os.path.isfile(command) else None
+        for flag in ("--version", "-V"):
+            try:
+                result = subprocess.run(
+                    [command, flag],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=env,
+                    cwd=cwd,
+                )
+                if result.returncode == 0:
+                    logging.info("GTKWave probe OK (%s %s)", command, flag)
+                    return True
+            except Exception as e:
+                logging.debug("GTKWave probe failed (%s %s): %s", command, flag, e)
+        return False
     
     def __init__(self, simulation_time: int = None, time_prefix: str = None):
         """
@@ -947,12 +994,16 @@ class SimulationManager(GHDLCommands):
             print(f"Launching GTKWave with: {os.path.basename(vcd_file_path)}")
             logging.info(f"Launching GTKWave: {gtkwave_cmd} {vcd_file_path}")
             
-            # Launch GTKWave in background
+            # Launch GTKWave in background (OSS CAD needs bin+lib on PATH)
+            env = self._gtkwave_run_env(gtkwave_cmd if os.path.isfile(gtkwave_cmd) else None)
             if os.name == 'nt':  # Windows
-                subprocess.Popen([gtkwave_cmd, vcd_file_path], 
-                               creationflags=subprocess.CREATE_NEW_CONSOLE)
+                subprocess.Popen(
+                    [gtkwave_cmd, vcd_file_path],
+                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    env=env,
+                )
             else:  # Unix/Linux
-                subprocess.Popen([gtkwave_cmd, vcd_file_path])
+                subprocess.Popen([gtkwave_cmd, vcd_file_path], env=env)
             
             print("GTKWave launched successfully")
             logging.info("GTKWave launched successfully")
@@ -1054,33 +1105,13 @@ class SimulationManager(GHDLCommands):
             bool: True if available through PATH, False otherwise
         """
         logging.info("Checking if GTKWave is available through PATH")
-        
-        gtkwave_tool = "gtkwave"
-        try:
-            result = subprocess.run(
-                [gtkwave_tool, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                logging.info(f"GTKWave version through PATH:\n{result.stdout}")
-                return True
-            # Some builds only accept -V
-            result = subprocess.run(
-                [gtkwave_tool, "-V"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                logging.info(f"GTKWave version through PATH (-V):\n{result.stdout}")
-                return True
-            logging.error("GTKWave not found or not working through PATH")
-            return False
-        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            logging.error("GTKWave not found or not working through PATH")
-            return False
+        if self._probe_gtkwave("gtkwave"):
+            return True
+        # Also try gtkwave.exe on Windows PATH
+        if os.name == "nt" and self._probe_gtkwave("gtkwave.exe"):
+            return True
+        logging.error("GTKWave not found or not working through PATH")
+        return False
     
     def check_gtkwave_direct(self) -> bool:
         """
@@ -1094,6 +1125,13 @@ class SimulationManager(GHDLCommands):
         try:
             tool_path = self.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
             if not tool_path:
+                # Fall back to Auto-Setup machine defaults
+                try:
+                    from .toolchain_autosetup import get_global_toolchain_defaults
+                    tool_path = get_global_toolchain_defaults().get("gtkwave", "") or ""
+                except Exception:
+                    tool_path = ""
+            if not tool_path:
                 logging.info("No direct path configured for GTKWave")
                 return False
             
@@ -1101,25 +1139,9 @@ class SimulationManager(GHDLCommands):
                 logging.error(f"GTKWave not found at configured path: {tool_path}")
                 return False
 
-            exe_dir = os.path.dirname(os.path.abspath(tool_path))
-            env = os.environ.copy()
-            env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
-
-            for flag in ("--version", "-V"):
-                try:
-                    result = subprocess.run(
-                        [tool_path, flag],
-                        capture_output=True,
-                        text=True,
-                        timeout=10,
-                        env=env,
-                        cwd=exe_dir,
-                    )
-                    if result.returncode == 0:
-                        logging.info(f"GTKWave confirmed working at {tool_path}")
-                        return True
-                except Exception:
-                    continue
+            if self._probe_gtkwave(tool_path):
+                logging.info(f"GTKWave confirmed working at {tool_path}")
+                return True
 
             logging.error(f"GTKWave at {tool_path} did not respond to --version/-V")
             return False
@@ -1152,31 +1174,10 @@ class SimulationManager(GHDLCommands):
             logging.error(f"Path must end with {expected_binary}")
             return False
         
-        # Test the tool (DLL search path = exe directory)
-        exe_dir = os.path.dirname(os.path.abspath(resolved_path))
-        env = os.environ.copy()
-        env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
-        ok = False
-        try:
-            for flag in ("--version", "-V"):
-                result = subprocess.run(
-                    [resolved_path, flag],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env=env,
-                    cwd=exe_dir,
-                )
-                if result.returncode == 0:
-                    logging.info(f"GTKWave test successful at {resolved_path}")
-                    ok = True
-                    break
-        except Exception as e:
-            logging.error(f"GTKWave test failed at {resolved_path}: {e}")
-            return False
-        if not ok:
+        if not self._probe_gtkwave(resolved_path):
             logging.error(f"GTKWave test failed at {resolved_path}: no --version/-V response")
             return False
+        logging.info(f"GTKWave test successful at {resolved_path}")
         
         # Add to configuration
         if "gtkwave_tool_path" not in self.project_config:
@@ -1197,6 +1198,35 @@ class SimulationManager(GHDLCommands):
             logging.error(f"Failed to save GTKWave path to configuration: {e}")
             return False
     
+    def _get_gtkwave_access(self) -> str:
+        """
+        Get the GTKWave access command/path based on preference
+        
+        Returns:
+            str: Command or path to use for GTKWave
+        """
+        # Prefer the shared toolchain preference used by the GUI status panel
+        prefs = self.project_config.get("cologne_chip_gatemate_tool_preferences", {})
+        preference = (
+            prefs.get("gtkwave")
+            or self.project_config.get("gtkwave_preference")
+            or "PATH"
+        ).upper()
+
+        if preference == "DIRECT":
+            path = self.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
+            if not path:
+                try:
+                    from .toolchain_autosetup import get_global_toolchain_defaults
+                    path = get_global_toolchain_defaults().get("gtkwave", "") or ""
+                except Exception:
+                    path = ""
+            return path
+        if preference == "PATH":
+            return "gtkwave"
+        logging.error("GTKWave preference is undefined")
+        return ""
+
     def set_gtkwave_preference(self, preference: str) -> bool:
         """
         Set GTKWave access preference in project configuration
@@ -1215,8 +1245,14 @@ class SimulationManager(GHDLCommands):
             return False
         
         self.project_config["gtkwave_preference"] = preference
+        # Keep GUI Toolchain Status in sync (it reads this map)
+        prefs = self.project_config.setdefault("cologne_chip_gatemate_tool_preferences", {})
+        prefs["gtkwave"] = preference
         
         try:
+            if not self.config_path:
+                logging.error("Cannot save GTKWave preference: no project configuration file open")
+                return False
             with open(self.config_path, "w") as config_file:
                 yaml.safe_dump(self.project_config, config_file)
             logging.info(f"Set GTKWave preference to: {preference}")
@@ -1224,23 +1260,6 @@ class SimulationManager(GHDLCommands):
         except Exception as e:
             logging.error(f"Failed to save GTKWave preference: {e}")
             return False
-    
-    def _get_gtkwave_access(self) -> str:
-        """
-        Get the GTKWave access command/path based on preference
-        
-        Returns:
-            str: Command or path to use for GTKWave
-        """
-        preference = self.project_config.get("gtkwave_preference", "PATH")
-        
-        if preference == "PATH":
-            return "gtkwave"
-        elif preference == "DIRECT":
-            return self.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
-        else:
-            logging.error("GTKWave preference is undefined")
-            return ""
     
     def get_available_simulations(self) -> dict:
         """
