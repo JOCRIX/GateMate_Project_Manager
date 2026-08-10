@@ -5,6 +5,22 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-10
+
+### Added
+
+- **Auto-Setup Toolchain** — One-time machine setup under Configuration: downloads pinned OSS CAD Suite and standalone GHDL, runs suite environment setup, persists User PATH / `YOSYSHQ_ROOT`, and stores global tool defaults for all future projects. Optional VS Code + TerosHDL path wiring.
+- **OSS CAD GTKWave integration** — Status checks and Launch Waveform Viewer use absolute `bin\gtkwave.exe` with suite environment (`environment.bat` / in-process env), preferring DIRECT over bare PATH on Windows.
+
+### Fixed
+
+- **GTKWave Individual Tool Status ERROR** — `SimulationManager` / `GHDLCommands` no longer crash on missing `project_structure` before any probe runs (fresh install / no project).
+- **Output flood on fresh start** — With no project loaded, path-structure and config-save failures are quiet; project/synthesis/implementation/simulation status panels idle instead of logging ERROR/WARNING spam. Real toolchain issues still surface.
+
+### Changed
+
+- Version bump to **0.4.1**.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added

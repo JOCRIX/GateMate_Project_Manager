@@ -4,7 +4,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 **The project is work-in-progress.**
 
-**Current version: 0.4.0**
+**Current version: 0.4.1**
 
 ## Features
 
@@ -40,7 +40,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ```
 GateMate_Project_Manager/
 ├── cc_project_manager_pkg/            # Core package modules
-│   ├── __init__.py                    # Package initialization and version (0.4.0)
+│   ├── __init__.py                    # Package initialization and version (0.4.1)
 │   ├── __main__.py                    # Main entry point
 │   ├── gui.py                         # PyQt5 GUI interface
 │   ├── cli.py                         # Interactive CLI interface
@@ -92,9 +92,9 @@ GateMate_Project_Manager/
    This creates global commands (see Usage section below).
 
 4. **Install the FPGA toolchain (OSS CAD Suite recommended):**
-   - [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) providing `yosys`, `nextpnr-himbaechel`, and `gmpack`
-   - GHDL (for VHDL simulation / elaboration; may be bundled or installed separately)
-   - Configure tool paths under **Configuration** if they are not already on PATH
+   - Prefer **Configuration → Auto-Setup Toolchain** for a one-time machine install of pinned OSS CAD Suite + standalone GHDL (sets User PATH / `YOSYSHQ_ROOT`; GTKWave and openFPGALoader come from the suite)
+   - Or install manually: [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (`yosys`, `nextpnr-himbaechel`, `gmpack`, GTKWave) plus standalone GHDL
+   - Configure or verify tool paths under **Configuration** if needed
 
 5. **Get openFPGALoader for uploading to the FPGA (non-Zector boards)**
    - Uploading bitstreams to a development board with openFPGALoader may require additional software, like dirtyJTAG, Zadig. See the documentation for the development board you are using.
@@ -230,4 +230,4 @@ JOCRIX
 
 ## Version
 
-0.4.0
+0.4.1

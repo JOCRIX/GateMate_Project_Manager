@@ -103,7 +103,7 @@ def _http_get(url: str, timeout: int = 120):
     req = Request(
         url,
         headers={
-            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4",
+            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4.1",
             "Accept": "*/*",
         },
     )

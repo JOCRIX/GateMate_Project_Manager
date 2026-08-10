@@ -17,7 +17,7 @@ from .toolchain_manager import ToolChainManager
 from .boards_manager import BoardsManager
 
 # Package metadata
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 __author__ = "JOCRIX"
 __description__ = "FPGA project management tool for Cologne Chip GateMate (OSS CAD Suite / nextpnr)"
 
