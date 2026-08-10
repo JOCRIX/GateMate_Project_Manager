@@ -3881,15 +3881,20 @@ class MainWindow(QMainWindow):
                         )
                         
                 except Exception as e:
-                    # Handle case where SimulationManager fails to initialize
+                    # SimulationManager init used to crash on incomplete project configs
+                    # (missing project_structure) before any GTKWave probe ran.
                     gtkwave_labels = self.tool_status_labels["GTKWave"]
+                    err_brief = f"{type(e).__name__}: {e}"
+                    logging.warning("Failed to check GTKWave status: %s", e, exc_info=True)
                     gtkwave_labels['path'].setText("PATH: ❌ Check failed")
                     gtkwave_labels['path'].setStyleSheet("color: #F44336;")
+                    gtkwave_labels['path'].setToolTip(err_brief)
                     gtkwave_labels['direct'].setText("DIRECT: ❌ Check failed")
                     gtkwave_labels['direct'].setStyleSheet("color: #F44336;")
-                    gtkwave_labels['status'].setText("STATUS: ❌ ERROR")
+                    gtkwave_labels['direct'].setToolTip(err_brief)
+                    gtkwave_labels['status'].setText(f"STATUS: ❌ ERROR ({type(e).__name__})")
                     gtkwave_labels['status'].setStyleSheet("color: #F44336;")
-                    logging.warning(f"Failed to check GTKWave status: {e}")
+                    gtkwave_labels['status'].setToolTip(err_brief)
                 
                 # Check GateMate synthesis flow (standalone GHDL + Yosys synth_gatemate)
                 try:

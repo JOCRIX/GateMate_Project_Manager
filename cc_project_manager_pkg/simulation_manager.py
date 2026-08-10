@@ -275,7 +275,14 @@ class SimulationManager(GHDLCommands):
         super().__init__(vhdl_std=vhdl_standard, ieee_lib=ieee_library)
         
         # Load simulation configuration
-        self.sim_config_path = os.path.join(os.path.dirname(self.config_path), "simulation_config.yml")
+        if self.config_path:
+            self.sim_config_path = os.path.join(
+                os.path.dirname(self.config_path), "simulation_config.yml"
+            )
+        else:
+            self.sim_config_path = os.path.join(
+                os.path.expanduser("~"), ".cc_project_manager", "simulation_config.yml"
+            )
         self.sim_config = self.load_simulation_config()
         
         # Set simulation parameters
@@ -509,6 +516,9 @@ class SimulationManager(GHDLCommands):
         self.project_config["simulation_settings"] = simulation_settings
         
         #write to project configuration file.
+        if not self.config_path:
+            logging.debug("No project config path; simulation_settings kept in-memory only")
+            return True
 
         try:
             with open(self.config_path, "w") as config_file:
@@ -1229,6 +1239,8 @@ class SimulationManager(GHDLCommands):
         if "gtkwave_tool_path" not in self.project_config:
             logging.info("Creating GTKWave tool path structure in project configuration")
             self.project_config["gtkwave_tool_path"] = gtkwave_structure
+            if not self.config_path:
+                return
             try:
                 with open(self.config_path, "w") as config_file:
                     yaml.safe_dump(self.project_config, config_file)
@@ -1240,6 +1252,8 @@ class SimulationManager(GHDLCommands):
             if not paths.get("gtkwave") and default_gtk:
                 paths["gtkwave"] = default_gtk
                 self.project_config["gtkwave_tool_path"] = paths
+                if not self.config_path:
+                    return
                 try:
                     with open(self.config_path, "w") as config_file:
                         yaml.safe_dump(self.project_config, config_file)

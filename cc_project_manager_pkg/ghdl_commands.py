@@ -52,30 +52,54 @@ class GHDLCommands(ToolChainManager):
             self.ghdl_logger.removeHandler(handler)
             handler.close()
         
-        # Get log file path for current project
-        log_path = os.path.normpath(os.path.join(self.config["project_structure"]["logs"][0], "ghdl_commands.log"))
+        # Get log file path for current project (tolerate incomplete project configs)
+        log_dir = None
+        try:
+            logs = (self.config or {}).get("project_structure", {}).get("logs")
+            if isinstance(logs, list) and logs:
+                log_dir = logs[0]
+            elif isinstance(logs, str) and logs:
+                log_dir = logs
+        except Exception:
+            log_dir = None
+        if not log_dir or not isinstance(log_dir, str):
+            log_dir = os.path.join(os.path.expanduser("~"), ".cc_project_manager", "logs")
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except OSError:
+            log_dir = os.path.expanduser("~")
+        log_path = os.path.normpath(os.path.join(log_dir, "ghdl_commands.log"))
         file_handler = logging.FileHandler(log_path)
         formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(formatter)
         self.ghdl_logger.addHandler(file_handler)
         
         # Add ghdl_commands.log to project configuration
-        self._add_ghdl_log()
+        try:
+            self._add_ghdl_log()
+        except Exception as e:
+            self.ghdl_logger.debug("Could not register ghdl log in project config: %s", e)
 
         if vhdl_std not in self.VHDL_STANDARDS:
             self.ghdl_logger.warning(f"Unknown VHDL Standard \"{vhdl_std}\", defaulting to VHDL-2008")
-            return
+            vhdl_std = "VHDL-2008"
         if ieee_lib not in self.IEEE_LIBS:
             self.ghdl_logger.error(f"The specified ieee_lib {ieee_lib} is not supported by GHDLCommands.")
-            return
+            ieee_lib = "synopsys"
         self.vhdl_std = self.VHDL_STANDARDS[vhdl_std]
         self.ieee_lib = self.IEEE_LIBS[ieee_lib]
         self.work_lib_name = work_lib_name
         # Get the build directory path
-        if isinstance(self.config["project_structure"]["build"], list) and self.config["project_structure"]["build"]:
-            self.work_dir = self.config["project_structure"]["build"][0]
-        else:
-            self.work_dir = self.config["project_structure"]["build"]
+        try:
+            build = (self.config or {}).get("project_structure", {}).get("build")
+            if isinstance(build, list) and build:
+                self.work_dir = build[0]
+            elif isinstance(build, str) and build:
+                self.work_dir = build
+            else:
+                self.work_dir = os.getcwd()
+        except Exception:
+            self.work_dir = os.getcwd()
         # Get individual ghdl preference, fallback to global preference for backward compatibility
         tool_prefs = self.config.get("cologne_chip_gatemate_tool_preferences", {})
         if "ghdl" in tool_prefs:
