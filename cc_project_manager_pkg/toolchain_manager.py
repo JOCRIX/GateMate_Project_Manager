@@ -155,9 +155,16 @@ class ToolChainManager(HierarchyManager):
             if tool_name not in self.config["cologne_chip_gatemate_tool_preferences"]:
                 self.config["cologne_chip_gatemate_tool_preferences"][tool_name] = "PATH"
         
-        # Also initialize GTKWave preference
+        # Also initialize GTKWave preference — DIRECT when a path is already known
+        gtk_path = (self.config.get("gtkwave_tool_path") or {}).get("gtkwave", "")
         if "gtkwave" not in self.config["cologne_chip_gatemate_tool_preferences"]:
-            self.config["cologne_chip_gatemate_tool_preferences"]["gtkwave"] = "PATH"
+            self.config["cologne_chip_gatemate_tool_preferences"]["gtkwave"] = (
+                "DIRECT" if gtk_path and os.path.isfile(gtk_path) else "PATH"
+            )
+        elif gtk_path and os.path.isfile(gtk_path):
+            # Prefer DIRECT whenever an absolute gtkwave path is configured
+            self.config["cologne_chip_gatemate_tool_preferences"]["gtkwave"] = "DIRECT"
+            self.config["gtkwave_preference"] = "DIRECT"
 
         # Prefer DIRECT when a user-configured absolute path exists and PATH fails
         paths = self.config.setdefault("cologne_chip_gatemate_toolchain_paths", {})

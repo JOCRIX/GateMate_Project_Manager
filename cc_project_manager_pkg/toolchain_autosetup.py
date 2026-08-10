@@ -603,19 +603,35 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
             notes.append("Current project: no project config open — skipped project path writes")
 
         if gtk and getattr(tcm, "config_path", None):
-            sim = SimulationManager()
-            if sim.add_gtkwave_path(gtk):
-                try:
-                    # DIRECT so Check Toolchain works before PATH refresh
-                    sim.set_gtkwave_preference("DIRECT")
-                    tcm.set_tool_preference("gtkwave", "DIRECT")
-                except Exception:
-                    pass
+            # Always force absolute DIRECT path into project config (do not gate on probe).
+            # Windows PATH preference is unreliable for OSS CAD gtkwave.exe DLL loading.
+            try:
+                tcm.config.setdefault("gtkwave_tool_path", {})["gtkwave"] = gtk
+                tcm.config["gtkwave_preference"] = "DIRECT"
+                tcm.config.setdefault(
+                    "cologne_chip_gatemate_tool_preferences", {}
+                )["gtkwave"] = "DIRECT"
+                tcm.update_config()
+                tcm.set_tool_preference("gtkwave", "DIRECT")
                 notes.append(f"Current project: gtkwave DIRECT -> {gtk}")
-            else:
-                notes.append(
-                    f"Current project: gtkwave path rejected by SimulationManager ({gtk})"
-                )
+            except Exception as e:
+                notes.append(f"Current project: gtkwave path write failed: {e}")
+            try:
+                sim = SimulationManager()
+                ensured = sim.ensure_gtkwave_direct()
+                if ensured:
+                    notes.append(f"GTKWave ensure_gtkwave_direct -> {ensured}")
+                if not probe_executable(gtk):
+                    notes.append(
+                        f"WARNING: GTKWave probe still failing for {gtk} "
+                        "(path saved as DIRECT anyway; try Check Toolchain after restart)"
+                    )
+            except Exception as e:
+                notes.append(f"GTKWave SimulationManager ensure skipped: {e}")
+        elif gtk:
+            notes.append(
+                "GTKWave: saved to machine defaults only (no project open for DIRECT path)"
+            )
     except Exception as e:
         notes.append(f"Current project path update skipped: {e}")
 

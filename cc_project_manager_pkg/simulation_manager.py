@@ -128,7 +128,49 @@ class SimulationManager(GHDLCommands):
                 )
             except Exception as e:
                 logging.debug("GTKWave probe failed (%s %s): %s", exe, flag, e)
+
+        # Windows fallback: cmd.exe resolution works when CreateProcess name lookup does not
+        if os.name == "nt":
+            try:
+                result = subprocess.run(
+                    f'"{exe}" --version',
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=env,
+                    cwd=cwd,
+                    shell=True,
+                )
+                if result.returncode == 0:
+                    logging.info("GTKWave probe OK via shell (%s)", exe)
+                    return True
+            except Exception as e:
+                logging.debug("GTKWave shell probe failed: %s", e)
         return False
+
+    def ensure_gtkwave_direct(self) -> str:
+        """Resolve OSS CAD gtkwave.exe, save as DIRECT, return absolute path or \"\"."""
+        exe = self._resolve_gtkwave_executable()
+        if not exe or not os.path.isfile(exe):
+            return ""
+        exe = os.path.abspath(exe)
+        if not self._probe_gtkwave(exe):
+            logging.warning("GTKWave resolved at %s but probe failed", exe)
+            # Still save DIRECT path — launch may work even if --version is flaky
+        try:
+            self.project_config.setdefault("gtkwave_tool_path", {})["gtkwave"] = exe
+            self.project_config["gtkwave_preference"] = "DIRECT"
+            prefs = self.project_config.setdefault(
+                "cologne_chip_gatemate_tool_preferences", {}
+            )
+            prefs["gtkwave"] = "DIRECT"
+            if self.config_path:
+                with open(self.config_path, "w") as config_file:
+                    yaml.safe_dump(self.project_config, config_file)
+            logging.info("GTKWave ensured DIRECT -> %s", exe)
+        except Exception as e:
+            logging.error("Failed to save GTKWave DIRECT path: %s", e)
+        return exe
     
     def __init__(self, simulation_time: int = None, time_prefix: str = None):
         """
@@ -1159,19 +1201,26 @@ class SimulationManager(GHDLCommands):
         binary_status = tool_status.get("BINARY")
         
         if path_status == STATUS_FAIL and binary_status == STATUS_FAIL:
+            # Last chance: force-resolve OSS CAD gtkwave and prefer DIRECT
+            ensured = self.ensure_gtkwave_direct()
+            if ensured and self._probe_gtkwave(ensured):
+                logging.info("GTKWave recovered via ensure_gtkwave_direct: %s", ensured)
+                return True
             logging.error("GTKWave is not reachable through PATH or direct path. Configure GTKWave path.")
             self.set_gtkwave_preference("undefined")
             return False
         
-        if path_status == STATUS_OK and binary_status == STATUS_OK:
-            logging.info("GTKWave is available through both PATH and direct path")
-            self.set_gtkwave_preference("path")
-        elif path_status == STATUS_OK:
-            logging.info("GTKWave is available through PATH")
-            self.set_gtkwave_preference("path")
-        elif binary_status == STATUS_OK:
+        # On Windows, bare PATH is unreliable for OSS CAD gtkwave — prefer DIRECT
+        if binary_status == STATUS_OK:
             logging.info("GTKWave is available through direct path")
             self.set_gtkwave_preference("direct")
+        elif path_status == STATUS_OK:
+            # Convert PATH success (often actually absolute resolve) into DIRECT
+            ensured = self.ensure_gtkwave_direct()
+            if ensured:
+                self.set_gtkwave_preference("direct")
+            else:
+                self.set_gtkwave_preference("path")
         
         return True
     

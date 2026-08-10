@@ -3653,35 +3653,52 @@ class MainWindow(QMainWindow):
                     try:
                         from cc_project_manager_pkg.simulation_manager import SimulationManager
                         sim_manager = SimulationManager()
-                        
-                        # Check availability
+
+                        # Prefer absolute DIRECT (OSS CAD); PATH name lookup is broken on Windows
+                        ensured = sim_manager.ensure_gtkwave_direct()
                         path_available = sim_manager.check_gtkwave_path()
                         direct_available = sim_manager.check_gtkwave_direct()
+                        if ensured and sim_manager._probe_gtkwave(ensured):
+                            direct_available = True
                         
                         # Get current GTKWave preference
                         gtkwave_pref = tcm.get_tool_preference("gtkwave")
                         
-                        # Only apply smart default if current preference is invalid or doesn't work
-                        needs_smart_default = False
-                        if gtkwave_pref not in ["PATH", "DIRECT"] or gtkwave_pref == "UNDEFINED":
-                            needs_smart_default = True
-                        elif gtkwave_pref == "PATH" and not path_available:
-                            needs_smart_default = True
-                        elif gtkwave_pref == "DIRECT" and not direct_available:
-                            needs_smart_default = True
-                        
-                        if needs_smart_default:
-                            # Set smart default for GTKWave based on availability
-                            if path_available:
-                                smart_default = "PATH"
-                            elif direct_available:
-                                smart_default = "DIRECT"
-                            else:
-                                smart_default = "PATH"  # Fallback
+                        # Force DIRECT when we have a working absolute binary
+                        if direct_available or (ensured and os.path.isfile(ensured)):
+                            smart_default = "DIRECT"
+                            if gtkwave_pref != "DIRECT":
+                                tcm.set_tool_preference("gtkwave", "DIRECT")
+                                try:
+                                    sim_manager.set_gtkwave_preference("DIRECT")
+                                except Exception:
+                                    pass
+                                logging.info(
+                                    f"Updated GTKWave preference from {gtkwave_pref} to DIRECT"
+                                )
+                            gtkwave_pref = "DIRECT"
+                        else:
+                            needs_smart_default = False
+                            if gtkwave_pref not in ["PATH", "DIRECT"] or gtkwave_pref == "UNDEFINED":
+                                needs_smart_default = True
+                            elif gtkwave_pref == "PATH" and not path_available:
+                                needs_smart_default = True
+                            elif gtkwave_pref == "DIRECT" and not direct_available:
+                                needs_smart_default = True
                             
-                            tcm.set_tool_preference("gtkwave", smart_default)
-                            logging.info(f"Updated GTKWave preference from {gtkwave_pref} to {smart_default} (current preference not working)")
-                            gtkwave_pref = smart_default
+                            if needs_smart_default:
+                                if path_available:
+                                    smart_default = "PATH"
+                                elif direct_available:
+                                    smart_default = "DIRECT"
+                                else:
+                                    smart_default = "DIRECT"  # still prefer DIRECT for OSS CAD
+                                
+                                tcm.set_tool_preference("gtkwave", smart_default)
+                                logging.info(
+                                    f"Updated GTKWave preference from {gtkwave_pref} to {smart_default}"
+                                )
+                                gtkwave_pref = smart_default
                         
                         # Update GTKWave dropdown
                         gtkwave_dropdown = self.tool_preference_dropdowns["GTKWave"]
@@ -3791,8 +3808,11 @@ class MainWindow(QMainWindow):
                     from cc_project_manager_pkg.simulation_manager import SimulationManager
                     sim_manager = SimulationManager()
                     gtkwave_labels = self.tool_status_labels["GTKWave"]
+
+                    # Seed absolute DIRECT path from OSS CAD / Auto-Setup defaults
+                    ensured = sim_manager.ensure_gtkwave_direct()
                     
-                    # Check PATH availability
+                    # Check PATH availability (internally resolves absolute OSS path)
                     path_available = sim_manager.check_gtkwave_path()
                     if path_available:
                         gtkwave_labels['path'].setText("PATH: ✅ Available")
@@ -3803,42 +3823,62 @@ class MainWindow(QMainWindow):
                     
                     # Check direct path availability
                     direct_available = sim_manager.check_gtkwave_direct()
-                    if direct_available:
-                        direct_path = sim_manager.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
-                        gtkwave_labels['direct'].setText("DIRECT: ✅ Available")
-                        gtkwave_labels['direct'].setStyleSheet("color: #4CAF50;")
-                        gtkwave_labels['direct'].setToolTip(direct_path)
+                    if not direct_available and ensured and sim_manager._probe_gtkwave(ensured):
+                        direct_available = True
+                    if direct_available or (ensured and os.path.isfile(ensured)):
+                        direct_path = (
+                            sim_manager.project_config.get("gtkwave_tool_path", {}).get("gtkwave", "")
+                            or ensured
+                        )
+                        probe_ok = bool(direct_path) and sim_manager._probe_gtkwave(direct_path)
+                        if probe_ok:
+                            gtkwave_labels['direct'].setText("DIRECT: ✅ Available")
+                            gtkwave_labels['direct'].setStyleSheet("color: #4CAF50;")
+                            direct_available = True
+                        else:
+                            gtkwave_labels['direct'].setText("DIRECT: ⚠️ Path set, probe failed")
+                            gtkwave_labels['direct'].setStyleSheet("color: #FF9800;")
+                        gtkwave_labels['direct'].setToolTip(direct_path or "")
                     else:
                         gtkwave_labels['direct'].setText("DIRECT: ⚠️ Not configured")
                         gtkwave_labels['direct'].setStyleSheet("color: #FF9800;")
                         gtkwave_labels['direct'].setToolTip("")
                     
-                    # Overall GTKWave status based on current preference
+                    # Overall GTKWave status — prefer DIRECT for OSS CAD gtkwave
                     gtkwave_pref = tcm.get_tool_preference("gtkwave")
-                    logging.debug(f"GTKWave preference: '{gtkwave_pref}', PATH available: {path_available}, DIRECT available: {direct_available}")
+                    if direct_available and gtkwave_pref != "DIRECT":
+                        tcm.set_tool_preference("gtkwave", "DIRECT")
+                        gtkwave_pref = "DIRECT"
+                    logging.debug(
+                        f"GTKWave preference: '{gtkwave_pref}', PATH available: {path_available}, "
+                        f"DIRECT available: {direct_available}, ensured: {ensured}"
+                    )
                     
-                    if gtkwave_pref == "PATH" and path_available:
-                        gtkwave_labels['status'].setText("STATUS: ✅ READY (using PATH)")
-                        gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
-                    elif gtkwave_pref == "DIRECT" and direct_available:
+                    if gtkwave_pref == "DIRECT" and direct_available:
                         gtkwave_labels['status'].setText("STATUS: ✅ READY (using DIRECT)")
                         gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
-                    elif gtkwave_pref == "PATH" and not path_available and direct_available:
-                        gtkwave_labels['status'].setText("STATUS: ⚠️ PATH not available, DIRECT ready")
-                        gtkwave_labels['status'].setStyleSheet("color: #FF9800;")
-                    elif gtkwave_pref == "DIRECT" and not direct_available and path_available:
-                        gtkwave_labels['status'].setText("STATUS: ⚠️ DIRECT not configured, PATH available")
+                    elif gtkwave_pref == "PATH" and path_available:
+                        gtkwave_labels['status'].setText("STATUS: ✅ READY (using PATH)")
+                        gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
+                    elif direct_available:
+                        gtkwave_labels['status'].setText("STATUS: ✅ READY (DIRECT)")
+                        gtkwave_labels['status'].setStyleSheet("color: #4CAF50;")
+                    elif gtkwave_pref == "PATH" and not path_available and ensured:
+                        gtkwave_labels['status'].setText("STATUS: ⚠️ Use DIRECT (PATH broken on Windows)")
                         gtkwave_labels['status'].setStyleSheet("color: #FF9800;")
                     elif gtkwave_pref == "PATH" and not path_available:
                         gtkwave_labels['status'].setText("STATUS: ❌ PATH not available")
                         gtkwave_labels['status'].setStyleSheet("color: #F44336;")
                     elif gtkwave_pref == "DIRECT" and not direct_available:
-                        gtkwave_labels['status'].setText("STATUS: ❌ DIRECT path not configured")
+                        gtkwave_labels['status'].setText("STATUS: ❌ DIRECT path not working")
                         gtkwave_labels['status'].setStyleSheet("color: #F44336;")
                     else:
                         gtkwave_labels['status'].setText("STATUS: ❌ NOT AVAILABLE")
                         gtkwave_labels['status'].setStyleSheet("color: #F44336;")
-                        logging.debug(f"GTKWave fell through to NOT AVAILABLE case - pref: '{gtkwave_pref}', PATH: {path_available}, DIRECT: {direct_available}")
+                        logging.debug(
+                            f"GTKWave fell through to NOT AVAILABLE - pref: '{gtkwave_pref}', "
+                            f"PATH: {path_available}, DIRECT: {direct_available}"
+                        )
                         
                 except Exception as e:
                     # Handle case where SimulationManager fails to initialize
