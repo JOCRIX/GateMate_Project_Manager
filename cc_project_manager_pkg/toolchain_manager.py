@@ -294,33 +294,128 @@ class ToolChainManager(HierarchyManager):
     def get_tool_run_env(self) -> dict:
         """Build an environment that can execute OSS CAD Suite binaries.
 
-        nextpnr-himbaechel / gmpack / yosys from OSS CAD Suite require both
-        ``bin`` and ``lib`` on PATH (DLL load). This mirrors environment.ps1.
+        Mirrors ``environment.bat`` / ``environment.ps1`` from the suite:
+        ``bin`` + ``lib`` on PATH, plus GTK/GDK/SSL/Qt vars. Required for
+        ``gtkwave.exe`` on Windows (YosysHQ: use environment.bat; there are
+        no Windows wrappers).
         """
         env = os.environ.copy()
         root = self.get_oss_cad_suite_root()
         if not root:
             return env
+        return self.apply_oss_cad_env(env, root)
 
+    @staticmethod
+    def apply_oss_cad_env(env: dict, root: str) -> dict:
+        """Apply OSS CAD Suite environment variables onto ``env`` (in-place + return)."""
+        root = os.path.abspath(root)
+        # environment.bat uses YOSYSHQ_ROOT with a trailing separator
+        yroot = root if root.endswith(("\\", "/")) else root + os.sep
         bin_dir = os.path.join(root, "bin")
         lib_dir = os.path.join(root, "lib")
+
         prefix_parts = []
         if os.path.isdir(bin_dir):
             prefix_parts.append(bin_dir)
         if os.path.isdir(lib_dir):
             prefix_parts.append(lib_dir)
-
         if prefix_parts:
             prefix = os.pathsep.join(prefix_parts)
             current = env.get("PATH", "")
-            # Avoid duplicating on every call
             if not current.lower().startswith(prefix.lower()):
                 env["PATH"] = prefix + os.pathsep + current
-            env["YOSYSHQ_ROOT"] = root if root.endswith(os.sep) else root + os.sep
-            cert = os.path.join(root, "etc", "cacert.pem")
-            if os.path.exists(cert):
-                env["SSL_CERT_FILE"] = cert
+
+        env["YOSYSHQ_ROOT"] = yroot
+        cert = os.path.join(root, "etc", "cacert.pem")
+        if os.path.isfile(cert):
+            env["SSL_CERT_FILE"] = cert
+        py = os.path.join(root, "lib", "python3.exe")
+        if os.path.isfile(py):
+            env["PYTHON_EXECUTABLE"] = py
+
+        # Suite builds ship qt5 plugins (see environment.ps1); fall back to qt6
+        qt5 = os.path.join(root, "lib", "qt5", "plugins")
+        qt6 = os.path.join(root, "lib", "qt6", "plugins")
+        if os.path.isdir(qt5):
+            env["QT_PLUGIN_PATH"] = qt5
+        elif os.path.isdir(qt6):
+            env["QT_PLUGIN_PATH"] = qt6
+        env["QT_LOGGING_RULES"] = "*=false"
+
+        env["GTK_EXE_PREFIX"] = yroot
+        env["GTK_DATA_PREFIX"] = yroot
+        pixbuf_dir = os.path.join(root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders")
+        pixbuf_cache = os.path.join(
+            root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders.cache"
+        )
+        if os.path.isdir(pixbuf_dir):
+            env["GDK_PIXBUF_MODULEDIR"] = pixbuf_dir
+        if os.path.isfile(pixbuf_cache) or os.path.isdir(os.path.dirname(pixbuf_cache)):
+            env["GDK_PIXBUF_MODULE_FILE"] = pixbuf_cache
+
+        soj = os.path.join(root, "share", "openFPGALoader")
+        if os.path.isdir(soj):
+            env["OPENFPGALOADER_SOJ_DIR"] = soj
         return env
+
+    def run_in_oss_cad_env(
+        self,
+        args: List[str],
+        *,
+        timeout: int = 30,
+        cwd: Optional[str] = None,
+    ) -> subprocess.CompletedProcess:
+        """Run a command with the OSS CAD environment active.
+
+        On Windows this prefers ``call environment.bat && ...`` (the supported
+        YosysHQ method). Falls back to applying the same env vars in-process.
+        """
+        root = self.get_oss_cad_suite_root()
+        if not root:
+            return subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=cwd,
+            )
+
+        if os.name == "nt":
+            bat = os.path.join(root, "environment.bat")
+            if os.path.isfile(bat):
+                # Quote each arg for cmd.exe
+                def _q(a: str) -> str:
+                    if not a:
+                        return '""'
+                    if any(ch in a for ch in ' \t"&<>|^()'):
+                        return '"' + a.replace('"', '\\"') + '"'
+                    return a
+
+                cmdline = "call {} && {}".format(_q(bat), " ".join(_q(a) for a in args))
+                return subprocess.run(
+                    cmdline,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                    cwd=cwd or root,
+                    shell=True,
+                )
+
+        env = self.apply_oss_cad_env(os.environ.copy(), root)
+        return subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=cwd or os.path.join(root, "bin"),
+            env=env,
+        )
 
     def _tool_version_args(self, tool_name: str) -> List[str]:
         """Return CLI args used to probe a tool's version / availability."""

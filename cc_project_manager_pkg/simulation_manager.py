@@ -14,44 +14,43 @@ class SimulationManager(GHDLCommands):
     __gtkwave_tool = {"gtkwave": "gtkwave.exe"} if os.name == 'nt' else {"gtkwave": "gtkwave"}
 
     def _gtkwave_run_env(self, exe_path: Optional[str] = None) -> dict:
-        """Environment that can load OSS CAD Suite GTKWave (needs bin + lib on PATH)."""
+        """Full OSS CAD Suite env (environment.bat equivalent) for GTKWave."""
         try:
             from .toolchain_manager import ToolChainManager
-            env = ToolChainManager().get_tool_run_env()
+            tcm = ToolChainManager()
+            root = tcm.get_oss_cad_suite_root()
+            if not root and exe_path and os.path.isfile(exe_path):
+                # Infer suite root from .../bin/gtkwave.exe
+                exe_dir = os.path.dirname(os.path.abspath(exe_path))
+                if os.path.basename(exe_dir).lower() == "bin":
+                    candidate = os.path.dirname(exe_dir)
+                    if os.path.isdir(os.path.join(candidate, "lib")):
+                        root = candidate
+            if root:
+                return ToolChainManager.apply_oss_cad_env(os.environ.copy(), root)
+            return tcm.get_tool_run_env()
         except Exception:
             env = os.environ.copy()
-
-        if exe_path and os.path.isfile(exe_path):
-            exe_dir = os.path.dirname(os.path.abspath(exe_path))
-            # Sibling lib/ next to bin/ (…/oss-cad-suite/bin/gtkwave.exe)
-            suite_root = os.path.dirname(exe_dir)
-            lib_dir = os.path.join(suite_root, "lib")
-            prefix = [exe_dir]
-            if os.path.isdir(lib_dir):
-                prefix.append(lib_dir)
-            env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
-            if os.path.isdir(lib_dir):
-                root = suite_root if suite_root.endswith(os.sep) else suite_root + os.sep
-                env["YOSYSHQ_ROOT"] = root
-                env["GTK_EXE_PREFIX"] = suite_root
-                env["GTK_DATA_PREFIX"] = suite_root
-                pixbuf_dir = os.path.join(
-                    suite_root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders"
-                )
-                pixbuf_cache = os.path.join(
-                    suite_root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders.cache"
-                )
-                if os.path.isdir(pixbuf_dir):
-                    env["GDK_PIXBUF_MODULEDIR"] = pixbuf_dir
-                if os.path.isfile(pixbuf_cache):
-                    env["GDK_PIXBUF_MODULE_FILE"] = pixbuf_cache
-        return env
+            if exe_path and os.path.isfile(exe_path):
+                exe_dir = os.path.dirname(os.path.abspath(exe_path))
+                suite_root = os.path.dirname(exe_dir)
+                lib_dir = os.path.join(suite_root, "lib")
+                if os.path.isdir(lib_dir):
+                    try:
+                        from .toolchain_manager import ToolChainManager
+                        return ToolChainManager.apply_oss_cad_env(env, suite_root)
+                    except Exception:
+                        env["PATH"] = (
+                            exe_dir + os.pathsep + lib_dir + os.pathsep + env.get("PATH", "")
+                        )
+            return env
 
     def _resolve_gtkwave_executable(self) -> str:
         """Return an absolute path to gtkwave.exe (required on Windows DLL load).
 
         Invoking bare ``gtkwave`` / ``gtkwave.exe`` via CreateProcess fails with
         STATUS_DLL_NOT_FOUND even when bin+lib are on PATH; the absolute path works.
+        YosysHQ's supported Windows approach is ``environment.bat`` then ``gtkwave``.
         """
         # 1) Project DIRECT path
         configured = (
@@ -92,10 +91,9 @@ class SimulationManager(GHDLCommands):
         return ""
 
     def _probe_gtkwave(self, command: str) -> bool:
-        """Return True if GTKWave responds to --version or -V with the OSS CAD env."""
+        """Return True if GTKWave responds under the OSS CAD environment."""
         if not command:
             return False
-        # Always use an absolute path on Windows (name-only CreateProcess breaks DLL load)
         exe = command
         if not os.path.isfile(exe):
             exe = self._resolve_gtkwave_executable()
@@ -103,6 +101,38 @@ class SimulationManager(GHDLCommands):
             logging.error("GTKWave probe: no absolute executable resolved for %r", command)
             return False
         exe = os.path.abspath(exe)
+
+        # Preferred: YosysHQ Windows method — call environment.bat then gtkwave
+        try:
+            from .toolchain_manager import ToolChainManager
+            tcm = ToolChainManager()
+            root = tcm.get_oss_cad_suite_root()
+            if not root:
+                exe_dir = os.path.dirname(exe)
+                if os.path.basename(exe_dir).lower() == "bin":
+                    root = os.path.dirname(exe_dir)
+            if root and os.path.isfile(os.path.join(root, "environment.bat")):
+                for flag in ("--version", "-V"):
+                    result = tcm.run_in_oss_cad_env(
+                        [exe, flag],
+                        timeout=20,
+                        cwd=os.path.join(root, "bin"),
+                    )
+                    if result.returncode == 0:
+                        logging.info(
+                            "GTKWave probe OK via environment.bat (%s %s)", exe, flag
+                        )
+                        return True
+                    logging.debug(
+                        "GTKWave environment.bat probe rc=%s flag=%s out=%r",
+                        result.returncode,
+                        flag,
+                        ((result.stdout or "") + (result.stderr or ""))[:200],
+                    )
+        except Exception as e:
+            logging.debug("GTKWave environment.bat probe error: %s", e)
+
+        # Fallback: apply env vars in-process (same as environment.bat contents)
         env = self._gtkwave_run_env(exe)
         cwd = os.path.dirname(exe)
         for flag in ("--version", "-V"):
@@ -118,18 +148,9 @@ class SimulationManager(GHDLCommands):
                 if result.returncode == 0:
                     logging.info("GTKWave probe OK (%s %s)", exe, flag)
                     return True
-                logging.debug(
-                    "GTKWave probe rc=%s for %s %s stdout=%r stderr=%r",
-                    result.returncode,
-                    exe,
-                    flag,
-                    (result.stdout or "")[:200],
-                    (result.stderr or "")[:200],
-                )
             except Exception as e:
                 logging.debug("GTKWave probe failed (%s %s): %s", exe, flag, e)
 
-        # Windows fallback: cmd.exe resolution works when CreateProcess name lookup does not
         if os.name == "nt":
             try:
                 result = subprocess.run(
@@ -1108,17 +1129,36 @@ class SimulationManager(GHDLCommands):
             # Launch GTKWave with the VCD file
             print(f"Launching GTKWave with: {os.path.basename(vcd_file_path)}")
             logging.info(f"Launching GTKWave: {gtkwave_cmd} {vcd_file_path}")
-            
-            # Launch GTKWave in background (OSS CAD needs bin+lib on PATH)
-            env = self._gtkwave_run_env(gtkwave_cmd)
-            if os.name == 'nt':  # Windows
-                subprocess.Popen(
-                    [gtkwave_cmd, vcd_file_path],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE,
-                    env=env,
-                    cwd=os.path.dirname(gtkwave_cmd),
-                )
-            else:  # Unix/Linux
+
+            if os.name == "nt":
+                # YosysHQ-supported Windows launch: environment.bat then gtkwave
+                from .toolchain_manager import ToolChainManager
+                tcm = ToolChainManager()
+                root = tcm.get_oss_cad_suite_root()
+                if not root:
+                    root = os.path.dirname(os.path.dirname(gtkwave_cmd))
+                bat = os.path.join(root, "environment.bat")
+                if os.path.isfile(bat):
+                    # start "" keeps a detached GUI process after the bat sets env
+                    cmdline = (
+                        f'call "{bat}" && start "" "{gtkwave_cmd}" "{vcd_file_path}"'
+                    )
+                    subprocess.Popen(
+                        cmdline,
+                        shell=True,
+                        cwd=root,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    )
+                else:
+                    env = self._gtkwave_run_env(gtkwave_cmd)
+                    subprocess.Popen(
+                        [gtkwave_cmd, vcd_file_path],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                        env=env,
+                        cwd=os.path.dirname(gtkwave_cmd),
+                    )
+            else:
+                env = self._gtkwave_run_env(gtkwave_cmd)
                 subprocess.Popen(
                     [gtkwave_cmd, vcd_file_path],
                     env=env,

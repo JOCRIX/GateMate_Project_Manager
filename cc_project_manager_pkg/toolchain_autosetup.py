@@ -234,20 +234,44 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
 def probe_executable(exe_path: str, *, timeout: int = 15) -> bool:
     """Return True if ``exe_path`` runs with ``--version`` or ``-V`` successfully.
 
-    Prepends the executable's directory and sibling ``lib/`` to PATH so OSS CAD
-    Suite Windows DLLs (needed by gtkwave.exe) can load.
+    For OSS CAD Suite tools (especially gtkwave), uses ``environment.bat`` on
+    Windows — the method YosysHQ documents for Windows.
     """
     if not exe_path or not os.path.isfile(exe_path):
         return False
+    exe_path = os.path.abspath(exe_path)
+    exe_dir = os.path.dirname(exe_path)
+    suite_root = os.path.dirname(exe_dir) if os.path.basename(exe_dir).lower() == "bin" else ""
+    bat = os.path.join(suite_root, "environment.bat") if suite_root else ""
+
+    if os.name == "nt" and bat and os.path.isfile(bat):
+        for flag in ("--version", "-V"):
+            try:
+                cmdline = f'call "{bat}" && "{exe_path}" {flag}'
+                result = subprocess.run(
+                    cmdline,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=suite_root,
+                    shell=True,
+                )
+                if result.returncode == 0:
+                    return True
+            except Exception:
+                continue
+
     env = os.environ.copy()
-    exe_dir = os.path.dirname(os.path.abspath(exe_path))
-    suite_root = os.path.dirname(exe_dir)
-    lib_dir = os.path.join(suite_root, "lib")
-    prefix = [exe_dir]
-    if os.path.isdir(lib_dir):
-        prefix.append(lib_dir)
-        env["YOSYSHQ_ROOT"] = suite_root if suite_root.endswith(os.sep) else suite_root + os.sep
-    env["PATH"] = os.pathsep.join(prefix) + os.pathsep + env.get("PATH", "")
+    if suite_root and os.path.isdir(os.path.join(suite_root, "lib")):
+        try:
+            from .toolchain_manager import ToolChainManager
+            env = ToolChainManager.apply_oss_cad_env(env, suite_root)
+        except Exception:
+            lib_dir = os.path.join(suite_root, "lib")
+            env["PATH"] = exe_dir + os.pathsep + lib_dir + os.pathsep + env.get("PATH", "")
+    else:
+        env["PATH"] = exe_dir + os.pathsep + env.get("PATH", "")
+
     for args in ([exe_path, "--version"], [exe_path, "-V"], [exe_path, "--help"]):
         try:
             result = subprocess.run(
@@ -400,10 +424,12 @@ def persist_oss_cad_user_environment(oss_root: str) -> None:
     set_user_env_var("YOSYSHQ_ROOT", root_slash)
     set_user_env_var("SSL_CERT_FILE", os.path.join(root, "etc", "cacert.pem"))
     set_user_env_var("PYTHON_EXECUTABLE", os.path.join(root, "lib", "python3.exe"))
-    set_user_env_var("QT_PLUGIN_PATH", os.path.join(root, "lib", "qt6", "plugins"))
+    qt5 = os.path.join(root, "lib", "qt5", "plugins")
+    qt6 = os.path.join(root, "lib", "qt6", "plugins")
+    set_user_env_var("QT_PLUGIN_PATH", qt5 if os.path.isdir(qt5) else qt6)
     set_user_env_var("QT_LOGGING_RULES", "*=false")
-    set_user_env_var("GTK_EXE_PREFIX", root)
-    set_user_env_var("GTK_DATA_PREFIX", root)
+    set_user_env_var("GTK_EXE_PREFIX", root_slash)
+    set_user_env_var("GTK_DATA_PREFIX", root_slash)
     set_user_env_var(
         "GDK_PIXBUF_MODULEDIR",
         os.path.join(root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders"),
