@@ -1000,6 +1000,60 @@ class SimulationManager(GHDLCommands):
     # Alias for backward compatibility
     pre_synth_simulate = behavioral_simulate
 
+    def _resolve_dut_entity_for_post_synth(self, testbench_name: str = None) -> Optional[str]:
+        """Resolve the design entity (DUT) to synthesize for post-synthesis simulation.
+
+        Preference order:
+        1. Infer from testbench name (``foo_tb`` → ``foo``) if a matching source exists
+        2. Project hierarchy top entity that does not look like a testbench
+        3. First source entity found in the hierarchy
+        """
+        # 1) Infer from selected / provided testbench name
+        if testbench_name:
+            candidates = []
+            lower = testbench_name.lower()
+            for suffix in ("_tb", "_testbench", "_test", "tb"):
+                if lower.endswith(suffix) and len(testbench_name) > len(suffix):
+                    candidates.append(testbench_name[: -len(suffix)])
+            if testbench_name.lower().startswith("tb_"):
+                candidates.append(testbench_name[3:])
+            for cand in candidates:
+                if cand and self._find_entity_file(cand):
+                    logging.info(
+                        "Resolved DUT entity '%s' from testbench '%s'",
+                        cand,
+                        testbench_name,
+                    )
+                    return cand
+
+        # 2) Hierarchy top — skip obvious testbench tops
+        try:
+            top_files = self.project_config.get("hdl_project_hierarchy", {}).get("top", {}) or {}
+            for _name, path in top_files.items():
+                entity = self.parse_entity_name_from_vhdl(path)
+                if not entity:
+                    continue
+                el = entity.lower()
+                if el.endswith("_tb") or el.endswith("_testbench") or el.startswith("tb_"):
+                    continue
+                logging.info("Resolved DUT entity from hierarchy top: %s", entity)
+                return entity
+        except Exception as e:
+            logging.warning("Could not resolve DUT from hierarchy top: %s", e)
+
+        # 3) First src entity
+        try:
+            src_files = self.project_config.get("hdl_project_hierarchy", {}).get("src", {}) or {}
+            for _name, path in src_files.items():
+                entity = self.parse_entity_name_from_vhdl(path)
+                if entity:
+                    logging.info("Resolved DUT entity from first src file: %s", entity)
+                    return entity
+        except Exception as e:
+            logging.warning("Could not resolve DUT from src hierarchy: %s", e)
+
+        return None
+
     def post_synthesis_simulate(self, entity_name: str = None, testbench_name: str = None) -> bool:
         """
         Run VHDL post-synthesis simulation using GHDL synthesis to VHDL.
@@ -1036,24 +1090,11 @@ class SimulationManager(GHDLCommands):
         logging.info("Starting VHDL post-synthesis simulation")
         logging.info("Using GHDL synthesis to VHDL followed by VHDL testbench simulation")
         
-        # Auto-detect entity name if not provided
+        # Auto-detect DUT entity if not provided
         if entity_name is None:
-            try:
-                # Try to get from top-level entity in project config
-                top_files = self.project_config["hdl_project_hierarchy"].get("top", {})
-                if top_files:
-                    top_file = list(top_files.values())[0]
-                    entity_name = self.parse_entity_name_from_vhdl(top_file)
-                    if entity_name:
-                        logging.info(f"Auto-detected entity: {entity_name}")
-                    else:
-                        logging.error("Could not auto-detect entity name")
-                        return False
-                else:
-                    logging.error("No top-level entity specified and auto-detection failed")
-                    return False
-            except Exception as e:
-                logging.error(f"Error auto-detecting entity: {e}")
+            entity_name = self._resolve_dut_entity_for_post_synth(testbench_name)
+            if not entity_name:
+                logging.error("No DUT entity specified and auto-detection failed")
                 return False
         
         # Use the GHDLCommands post_synthesis_simulation method
@@ -1068,6 +1109,11 @@ class SimulationManager(GHDLCommands):
             simulation_length, time_prefix = sim_settings
             logging.info(f"Using simulation settings: {simulation_length}{time_prefix}")
             print(f"Using simulation time: {simulation_length}{time_prefix}")
+            if testbench_name:
+                logging.info(f"Using testbench: {testbench_name}")
+                print(f"Using testbench: {testbench_name}")
+            logging.info(f"Synthesizing / simulating DUT entity: {entity_name}")
+            print(f"DUT entity: {entity_name}")
             
             success = super().post_synthesis_simulation(
                 entity_name=entity_name,

@@ -6,13 +6,12 @@ import logging
 import os
 from typing import Dict, List, Optional
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -72,7 +71,9 @@ class AutoSetupToolchainDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Auto-Setup Toolchain (one-time)")
         self.setModal(True)
-        self.resize(720, 640)
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        self.resize(920, 700)
+        self.setMinimumWidth(820)
         self._worker: Optional[_AutoSetupWorker] = None
         self._bars: Dict[str, QProgressBar] = {}
         self._status: Dict[str, QLabel] = {}
@@ -80,13 +81,8 @@ class AutoSetupToolchainDialog(QDialog):
         root = QVBoxLayout(self)
 
         intro = QLabel(
-            "One-time machine setup for all future GateMate projects.\n"
-            "Downloads pinned toolchain versions, then:\n"
-            "• OSS CAD Suite — environment.ps1/bat + YOSYSHQ_ROOT / PATH "
-            "(includes Yosys, nextpnr, gmpack, openFPGALoader, GTKWave;\n"
-            "  GTKWave is checked/launched via environment.bat as YosysHQ documents)\n"
-            "• GHDL — standalone Windows zip + User PATH\n"
-            "• TerosHDL — writes ~/.teroshdl2_config.json (GHDL/Yosys/GTKWave paths)"
+            "One-time machine setup for the GateMate toolchain.\n"
+            "Downloads pinned versions and configures this PC for all future projects."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color: #AAAAAA;")
@@ -103,25 +99,47 @@ class AutoSetupToolchainDialog(QDialog):
         root.addLayout(dir_row)
 
         self.vscode_check = QCheckBox(
-            f"Also install Visual Studio Code + TerosHDL ({TEROSHDL_EXTENSION_ID})"
+            "Also set up Visual Studio Code and TerosHDL:\n"
+            "  1. Check / Install Visual Studio Code\n"
+            "  2. Check / Install TerosHDL "
+            f"(requires Visual Studio Code — {TEROSHDL_EXTENSION_ID})"
         )
         self.vscode_check.setChecked(False)
         self.vscode_check.setToolTip(
-            "If checked: detect VS Code, silently install the user setup if missing, "
-            "then install the TerosHDL extension."
+            "If checked, Auto-Setup will:\n"
+            "1. Detect Visual Studio Code and install the user setup if it is missing.\n"
+            "2. Install the TerosHDL extension (requires VS Code).\n"
+            "TerosHDL tool paths are written to ~/.teroshdl2_config.json."
         )
         self.vscode_check.toggled.connect(self._on_vscode_toggled)
         root.addWidget(self.vscode_check)
 
         comps = QGroupBox("Pinned components (downloaded in parallel)")
-        form = QFormLayout(comps)
+        comps_layout = QVBoxLayout(comps)
+        comps_layout.setSpacing(14)
+        component_blurbs = {
+            "oss_cad_suite": (
+                "yosys: synthesis · nextpnr: place & route · gmpack: bitstream generator · "
+                "openFPGALoader: board programming · GTKWave: VCD waveform viewer"
+            ),
+            "ghdl": (
+                "Standalone VHDL simulator / elaborator (Windows mcode)\n"
+                "Added to User PATH for simulation and GateMate synth flow"
+            ),
+        }
         for comp in PINNED_COMPONENTS:
-            self._add_progress_row(form, comp.key, f"{comp.title} — {comp.version}")
+            blurb = component_blurbs.get(comp.key, "")
+            title = f"{comp.title} — {comp.version}"
+            if blurb:
+                title = f"{title}\n{blurb}"
+            self._add_progress_row(comps_layout, comp.key, title)
 
         self._add_progress_row(
-            form,
+            comps_layout,
             "vscode",
-            "VS Code + TerosHDL (optional)",
+            "VS Code + TerosHDL (optional)\n"
+            "1. Check / Install Visual Studio Code\n"
+            "2. Check / Install TerosHDL (requires Visual Studio Code)",
         )
         self._set_vscode_row_enabled(False)
         root.addWidget(comps)
@@ -151,24 +169,40 @@ class AutoSetupToolchainDialog(QDialog):
         buttons.addWidget(self.close_btn)
         root.addLayout(buttons)
 
-    def _add_progress_row(self, form: QFormLayout, key: str, title: str) -> None:
+    def _add_progress_row(self, layout: QVBoxLayout, key: str, title: str) -> None:
+        """Full-width component row: title/blurb on top, progress bar below."""
         label = QLabel(title)
+        label.setWordWrap(True)
+        label.setMinimumWidth(760)
         label.setStyleSheet("font-weight: bold;")
+        # First line stays bold; following explanation lines are lighter
+        if "\n" in title:
+            head, rest = title.split("\n", 1)
+            label.setText(
+                f"<b>{head}</b><br>"
+                f"<span style='font-weight:normal; color:#AAAAAA; font-size:11px;'>"
+                f"{rest.replace(chr(10), '<br>')}</span>"
+            )
+            label.setTextFormat(Qt.RichText)
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
         bar.setFormat("%p%")
+        bar.setMinimumHeight(22)
         status = QLabel("Waiting…")
         status.setStyleSheet("color: #888888; font-size: 11px;")
         cell = QVBoxLayout()
+        cell.setContentsMargins(0, 0, 0, 0)
+        cell.setSpacing(4)
+        cell.addWidget(label)
         cell.addWidget(bar)
         cell.addWidget(status)
         w = QWidget()
         w.setLayout(cell)
-        form.addRow(label, w)
+        w.setMinimumWidth(780)
+        layout.addWidget(w)
         self._bars[key] = bar
         self._status[key] = status
-        # Keep label reference for enable/disable via form buddy
         w.setProperty("row_label", label)
 
     def _on_vscode_toggled(self, checked: bool) -> None:

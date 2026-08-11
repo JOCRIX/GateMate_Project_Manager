@@ -1344,7 +1344,7 @@ class SimulationRunDialog(QDialog):
         self.simulation_type = simulation_type
         self.setWindowTitle(f"Run {simulation_type.title()} Simulation")
         self.setModal(True)
-        self.resize(450, 350)
+        self.resize(520, 420)
         
         # Initialize SimulationManager to get current settings
         try:
@@ -1369,6 +1369,18 @@ class SimulationRunDialog(QDialog):
         header_label.setFont(QFont("Arial", 14, QFont.Bold))
         header_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(header_label)
+
+        # Where this sim fits in the flow
+        flow_blurb = self._flow_explanation_text()
+        if flow_blurb:
+            flow_label = QLabel(flow_blurb)
+            flow_label.setWordWrap(True)
+            flow_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            flow_label.setStyleSheet(
+                "color: #CFD8DC; font-size: 11px; padding: 8px 10px; "
+                "background-color: #2E3440; border: 1px solid #4C566A; border-radius: 4px;"
+            )
+            layout.addWidget(flow_label)
         
         # Simulation info section
         info_group = QGroupBox("Simulation Information")
@@ -1461,6 +1473,24 @@ class SimulationRunDialog(QDialog):
         button_layout.addWidget(run_btn)
         
         layout.addLayout(button_layout)
+
+    def _flow_explanation_text(self) -> str:
+        """Short blurb describing where this simulation sits in the overall flow."""
+        sim_type = (self.simulation_type or "").lower().replace("_", "-")
+        if sim_type == "behavioral":
+            return (
+                "Behavioral (RTL) simulation runs your original VHDL "
+                "with a testbench before any synthesis. Use it to check functional / "
+                "logical behavior. It does not model FPGA place-and-route timing."
+            )
+        if sim_type == "post-synthesis":
+            return (
+                "After RTL simulation, before FPGA implementation. "
+                "GHDL synthesizes the design to a VHDL netlist, then your testbench "
+                "stimulates that netlist. This is not Yosys/GateMate synthesis and not "
+                "post-place-and-route / SDF timing simulation."
+            )
+        return ""
     
     def get_simulation_settings(self):
         """Get the configured simulation settings."""
@@ -3210,9 +3240,11 @@ class MainWindow(QMainWindow):
         widget = QWidget()
         main_layout = QHBoxLayout(widget)
         
-        # Left side - Implementation Operations
+        # Left side - Implementation Operations (fixed width so analysis actions
+        # / status text cannot stretch this column)
         impl_group = QGroupBox("Implementation Operations")
-        impl_group.setMaximumWidth(400)  # Limit container width
+        impl_group.setFixedWidth(400)
+        impl_group.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         impl_layout = QVBoxLayout(impl_group)
         
 
@@ -3229,8 +3261,9 @@ class MainWindow(QMainWindow):
             btn = QPushButton(text)
             btn.clicked.connect(callback)
             btn.setToolTip(tooltip)
-            btn.setMinimumHeight(40)
-            btn.setMaximumWidth(380)  # Limit button width
+            btn.setFixedHeight(40)
+            btn.setFixedWidth(370)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             impl_layout.addWidget(btn)
         
         # Add separator
@@ -3250,27 +3283,46 @@ class MainWindow(QMainWindow):
         analysis_note.setFont(QFont("Arial", 9))
         analysis_note.setStyleSheet("color: #888888; margin: 10px 0px 10px 0px; font-style: italic;")
         analysis_note.setWordWrap(True)
+        analysis_note.setMaximumWidth(370)
         impl_layout.addWidget(analysis_note)
         
         # Status label for selected design
         self.selected_design_status = QLabel("No design selected")
+        self.selected_design_status.setWordWrap(True)
+        self.selected_design_status.setMaximumWidth(370)
+        self.selected_design_status.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.selected_design_status.setStyleSheet("color: #888888; font-size: 11px; margin: 5px 0px 10px 0px;")
         impl_layout.addWidget(self.selected_design_status)
         
         analysis_buttons = [
-            ("⏱️ View Timing Report", self.view_timing_report, "View detailed timing analysis report"),
-            ("📊 View Utilization Report", self.view_utilization_report, "View resource utilization report"),
-            ("📍 View Placement Report", self.view_placement_report, "View placement and routing details"),
-            ("⚡ View Power Analysis", self.view_power_analysis, "View power consumption analysis")
+            ("⏱️ View Timing Report", self.view_timing_report, "View nextpnr timing report (JSON / SDF)"),
+            ("📊 View Utilization Report", self.view_utilization_report, "View nextpnr resource utilization from --report JSON"),
+            ("📍 View Placement Report", self.view_placement_report, "View nextpnr placed/routed SVG paths and metrics"),
+            ("⚡ View Power Analysis", self.view_power_analysis, "Power analysis is not available with nextpnr/gmpack"),
         ]
         
+        self.view_power_analysis_btn = None
         for text, callback, tooltip in analysis_buttons:
             btn = QPushButton(text)
             btn.clicked.connect(callback)
             btn.setToolTip(tooltip)
-            btn.setMinimumHeight(35)
-            btn.setMaximumWidth(380)
-            btn.setStyleSheet("QPushButton { background-color: #2E3440; color: #D8DEE9; border: 1px solid #4C566A; }")
+            btn.setFixedHeight(35)
+            btn.setFixedWidth(370)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            btn.setStyleSheet(
+                "QPushButton { background-color: #2E3440; color: #D8DEE9; "
+                "border: 1px solid #4C566A; }"
+            )
+            if text.startswith("⚡ View Power Analysis"):
+                self.view_power_analysis_btn = btn
+                btn.setEnabled(False)
+                btn.setStyleSheet(
+                    "QPushButton { background-color: #4a4a4a; color: #888888; "
+                    "border: 1px solid #555555; }"
+                )
+                btn.setToolTip(
+                    "Power analysis is not supported by nextpnr-himbaechel / gmpack"
+                )
             impl_layout.addWidget(btn)
         
         # Add stretch to keep buttons at top with consistent spacing
@@ -3278,9 +3330,12 @@ class MainWindow(QMainWindow):
         
         # Right side - Implementation Status Panel
         self.implementation_status_widget = self.create_implementation_status_widget()
+        self.implementation_status_widget.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
         
         # Layout
-        main_layout.addWidget(impl_group)
+        main_layout.addWidget(impl_group, 0)
         main_layout.addWidget(self.implementation_status_widget, 1)  # Give status panel more space
         
         # Initialize design selection
@@ -3303,8 +3358,8 @@ class MainWindow(QMainWindow):
         sim_layout = QVBoxLayout(sim_group)
         
         buttons = [
-            ("Behavioral Simulation", self.behavioral_simulation, "Run behavioral simulation with configuration options"),
-            ("Post-Synthesis Simulation", self.post_synthesis_simulation, "Run post-synthesis simulation with configuration options"),
+            ("Behavioral Simulation", self.behavioral_simulation, "Run RTL/behavioral simulation with a VHDL testbench (before synthesis)"),
+            ("Post-Synthesis Simulation", self.post_synthesis_simulation, "Simulate GHDL-synthesized VHDL netlist with your testbench (not Yosys/P&R)"),
             ("Configure Simulation", self.configure_simulation, "Configure simulation settings and VHDL/IEEE standards"),
             ("Launch Waveform Viewer", self.launch_waveform_viewer, "Open GTKWave for waveform analysis"),
             ("View Simulation Logs", self.view_simulation_logs, "View simulation log files and reports")
@@ -3358,6 +3413,7 @@ class MainWindow(QMainWindow):
         # Store references to programming buttons for dynamic enabling/disabling
         self.program_sram_btn = None
         self.program_flash_btn = None
+        self.verify_bitstream_btn = None
         
         for text, callback, tooltip in buttons:
             btn = QPushButton(text)
@@ -3372,6 +3428,8 @@ class MainWindow(QMainWindow):
                 self.program_sram_btn = btn
             elif text == "Program Flash":
                 self.program_flash_btn = btn
+            elif text == "Verify Bitstream":
+                self.verify_bitstream_btn = btn
         
         # Add stretch to keep buttons at top with consistent spacing
         upload_layout.addStretch()
@@ -4528,10 +4586,21 @@ class MainWindow(QMainWindow):
         info_frame = QFrame()
         info_layout = QVBoxLayout(info_frame)
         info_layout.setContentsMargins(10, 5, 10, 5)
+
+        # Target board first — centered at top of status box
+        default_board_name = "No board selected"
+        if getattr(self, "selected_board", None):
+            default_board_name = self.selected_board.get("name") or default_board_name
+        self.selected_board_status_label = QLabel(f"Target Board: {default_board_name}")
+        self.selected_board_status_label.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.selected_board_status_label.setStyleSheet(
+            "font-weight: bold; color: #FF9800;"
+        )
+        info_layout.addWidget(self.selected_board_status_label)
         
-        # openFPGALoader status
+        # Programming tool status (openFPGALoader or ZI FPGA Loader)
         self.openfpgaloader_status_label = QLabel("Programming Tool: Checking...")
-        self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #FFA726;")
+        self.openfpgaloader_status_label.setStyleSheet("font-weight: bold; color: #FFA726; margin-top: 5px;")
         info_layout.addWidget(self.openfpgaloader_status_label)
         
         # Device detection status
@@ -4561,11 +4630,6 @@ class MainWindow(QMainWindow):
             }
         """)
         info_layout.addWidget(self.upload_progress_bar)
-        
-        # Selected board info
-        self.selected_board_status_label = QLabel("Target Board: Olimex GateMate EVB")
-        self.selected_board_status_label.setStyleSheet("font-weight: bold; color: #FF9800; margin-top: 5px;")
-        info_layout.addWidget(self.selected_board_status_label)
         
         # Selected bitstream info
         self.selected_bitstream_label = QLabel("Selected Bitstream: None")
@@ -8696,174 +8760,252 @@ class MainWindow(QMainWindow):
                 f"Failed to clear the implementation log file:\n\n{str(e)}"
             )
     
+    def _require_selected_design_for_analysis(self, analysis_name: str) -> bool:
+        """Return True if a design is selected; otherwise prompt without resizing the ops column."""
+        if self.selected_design:
+            return True
+        logging.warning("⚠️ No design selected for %s", analysis_name)
+        self.show_message(
+            "No Design Selected",
+            "Please click an implemented design in the Design/File list first.",
+            "warning",
+        )
+        return False
+
     # Implementation Analysis Methods
+    def _format_nextpnr_report_section(self, report_path: str, section: str) -> str:
+        """Build a text report from nextpnr ``--report`` JSON for timing or utilization."""
+        from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+        import json
+
+        lines = [
+            f"Source: {report_path}",
+            f"Design: {self.selected_design}",
+            "",
+        ]
+        metrics = NextPnRCommands.parse_report_metrics(report_path)
+        summary = metrics.get("summary_lines") or []
+        if summary:
+            lines.append("=== Summary ===")
+            lines.extend(summary)
+            lines.append("")
+
+        if section == "timing":
+            lines.append("=== Timing Metrics ===")
+            slack = metrics.get("worst_slack")
+            fmax = metrics.get("fmax")
+            lines.append(
+                f"Worst slack: {slack} ns" if slack is not None else "Worst slack: (not in report)"
+            )
+            lines.append(
+                f"Limiting Fmax: {fmax} MHz" if fmax is not None else "Limiting Fmax: (not in report)"
+            )
+            fmax_by_clock = metrics.get("fmax_by_clock") or {}
+            if fmax_by_clock:
+                lines.append("Fmax by clock:")
+                for clk, val in fmax_by_clock.items():
+                    lines.append(f"  {clk}: {val} MHz")
+            lines.append("")
+            raw = metrics.get("raw")
+            if isinstance(raw, dict):
+                for key in ("fmax", "critical_paths", "timing", "slack", "wns"):
+                    if key in raw:
+                        lines.append(f"=== JSON[{key}] ===")
+                        lines.append(json.dumps(raw[key], indent=2, ensure_ascii=False))
+                        lines.append("")
+        elif section == "utilization":
+            lines.append("=== Utilization ===")
+            util = metrics.get("utilization") or {}
+            if util:
+                for key, value in util.items():
+                    lines.append(f"{key}: {value}")
+            else:
+                raw = metrics.get("raw")
+                if isinstance(raw, dict):
+                    for key in ("utilization", "util", "stats", "devices"):
+                        if key in raw:
+                            lines.append(f"=== JSON[{key}] ===")
+                            lines.append(json.dumps(raw[key], indent=2, ensure_ascii=False))
+                            lines.append("")
+                if len(lines) <= 6:
+                    lines.append("(No utilization section found in report JSON)")
+            wl = metrics.get("wirelength")
+            if wl is not None:
+                lines.append("")
+                lines.append(f"Wirelength: {wl}")
+        return "\n".join(lines)
+
     def view_timing_report(self):
-        """View detailed timing analysis report for the selected design."""
-        if not self.selected_design:
-            logging.warning("⚠️ No design selected for timing analysis")
-            self.selected_design_status.setText("Please click on an implemented design in the Design/File container above")
-            self.selected_design_status.setStyleSheet("color: #FF9800; font-size: 11px; margin-top: 5px;")
+        """View nextpnr timing data (report JSON + optional SDF) for the selected design."""
+        if not self._require_selected_design_for_analysis("timing analysis"):
             return
-            
+
         try:
             from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
             pnr = NextPnRCommands()
-            
-            # Check if design has timing analysis
             status = pnr.get_implementation_status(self.selected_design)
-            if not status.get('timing_analyzed', False):
-                self.show_message("No Timing Data", 
-                                f"Design '{self.selected_design}' has no timing analysis.\n\n" +
-                                "Run Timing Analysis or Full Implementation first.", "warning")
+            if not status.get("placed", False):
+                self.show_message(
+                    "No Implementation Data",
+                    f"Design '{self.selected_design}' has not been implemented.\n\n"
+                    "Run Place & Route first.",
+                    "warning",
+                )
                 return
-            
-            # Look for design-specific timing files first
-            timing_files = []
-            
-            # Check for SDF files (Standard Delay Format)
-            sdf_patterns = [
-                os.path.join(pnr.timing_dir, f"{self.selected_design}.sdf"),
-                os.path.join(pnr.timing_dir, f"{self.selected_design}_impl_00.sdf"),
-                os.path.join(pnr.work_dir, f"{self.selected_design}_impl_00.sdf")
-            ]
-            
-            for sdf_file in sdf_patterns:
-                if os.path.exists(sdf_file):
-                    timing_files.append(sdf_file)
-                    break
-            
-            # Look for timing analysis in the main log file
-            log_file = os.path.join(pnr.impl_logs_dir, "nextpnr_commands.log")
-            if os.path.exists(log_file):
-                timing_files.append(log_file)
-            
-            if timing_files:
-                # Extract timing analysis content
-                timing_content = self._extract_timing_analysis_for_design(timing_files, self.selected_design)
-                if timing_content:
-                    title = f"Timing Analysis Report - {self.selected_design}"
-                    self._show_analysis_dialog(title, timing_content, "timing")
-                else:
-                    self.show_message("No Timing Data", 
-                                    f"No timing analysis found for design '{self.selected_design}'.\n\n" +
-                                    "The timing analysis may not have completed successfully.", "warning")
-            else:
-                self.show_message("No Implementation Data", 
-                                f"No timing files found for design '{self.selected_design}'.\n\n" +
-                                "Run Timing Analysis first to generate timing data.", "warning")
-                
+
+            artifacts = pnr.get_analysis_artifacts(self.selected_design)
+            parts = []
+            report_json = artifacts.get("report_json")
+            if report_json:
+                parts.append(self._format_nextpnr_report_section(report_json, "timing"))
+            for sdf in artifacts.get("sdf_files") or []:
+                sdf_content = self._parse_sdf_file(sdf, self.selected_design)
+                if sdf_content:
+                    parts.append(f"=== SDF ({os.path.basename(sdf)}) ===\n{sdf_content}")
+
+            if not parts:
+                self.show_message(
+                    "No Timing Data",
+                    f"No nextpnr timing report found for '{self.selected_design}'.\n\n"
+                    "Enable \"Generate timing/utilization JSON\" in Place & Route settings "
+                    f"(looks for {self.selected_design}_report.json under the timing folder).",
+                    "warning",
+                )
+                return
+
+            title = f"Timing Analysis Report - {self.selected_design}"
+            self._show_analysis_dialog(title, "\n\n".join(parts), "timing")
+
         except Exception as e:
             logging.error(f"Error viewing timing report: {str(e)}")
             self.show_message("Error", f"Failed to view timing report:\n{str(e)}", "error")
-    
+
     def view_utilization_report(self):
-        """View resource utilization report for the selected design."""
-        if not self.selected_design:
-            logging.warning("⚠️ No design selected for utilization analysis")
-            self.selected_design_status.setText("Please click on an implemented design in the Design/File container above")
-            self.selected_design_status.setStyleSheet("color: #FF9800; font-size: 11px; margin-top: 5px;")
+        """View nextpnr resource utilization from ``--report`` JSON."""
+        if not self._require_selected_design_for_analysis("utilization analysis"):
             return
-            
+
         try:
             from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
             pnr = NextPnRCommands()
-            
-            # Check if design has been implemented
             status = pnr.get_implementation_status(self.selected_design)
-            if not status.get('placed', False):
-                self.show_message("No Implementation Data", 
-                                f"Design '{self.selected_design}' has not been implemented.\n\n" +
-                                "Run Place & Route first to generate utilization data.", "warning")
+            if not status.get("placed", False):
+                self.show_message(
+                    "No Implementation Data",
+                    f"Design '{self.selected_design}' has not been implemented.\n\n"
+                    "Run Place & Route first to generate utilization data.",
+                    "warning",
+                )
                 return
-            
-            # Look for design-specific utilization files
-            utilization_files = []
-            
-            # Check for design-specific .used files
-            if os.path.exists(pnr.work_dir):
-                for file in os.listdir(pnr.work_dir):
-                    if file.startswith(self.selected_design) and file.endswith('.used'):
-                        utilization_files.append(os.path.join(pnr.work_dir, file))
-            
-            # Check for generic LUT report (this may contain multiple designs)
-            lut_report = os.path.join(pnr.work_dir, "lut_report.txt")
-            if os.path.exists(lut_report):
-                utilization_files.append(lut_report)
-            
-            # Check for design-specific LUT report
-            design_lut_report = os.path.join(pnr.work_dir, f"{self.selected_design}_lut_report.txt")
-            if os.path.exists(design_lut_report):
-                utilization_files.append(design_lut_report)
-            
-            if utilization_files:
-                # Combine all utilization data
-                utilization_content = self._combine_utilization_reports_for_design(utilization_files, self.selected_design)
-                title = f"Resource Utilization Report - {self.selected_design}"
-                self._show_analysis_dialog(title, utilization_content, "utilization")
-            else:
-                self.show_message("No Utilization Data", 
-                                f"No utilization reports found for design '{self.selected_design}'.\n\n" +
-                                "The utilization data may not have been generated properly.", "warning")
-                
+
+            artifacts = pnr.get_analysis_artifacts(self.selected_design)
+            report_json = artifacts.get("report_json")
+            if not report_json:
+                self.show_message(
+                    "No Utilization Data",
+                    f"No nextpnr report JSON found for '{self.selected_design}'.\n\n"
+                    "Enable \"Generate timing/utilization JSON\" in Place & Route settings.",
+                    "warning",
+                )
+                return
+
+            content = self._format_nextpnr_report_section(report_json, "utilization")
+            title = f"Resource Utilization Report - {self.selected_design}"
+            self._show_analysis_dialog(title, content, "utilization")
+
         except Exception as e:
             logging.error(f"Error viewing utilization report: {str(e)}")
             self.show_message("Error", f"Failed to view utilization report:\n{str(e)}", "error")
-    
+
     def view_placement_report(self):
-        """View placement and routing details for the selected design."""
-        if not self.selected_design:
-            logging.warning("⚠️ No design selected for placement analysis")
-            self.selected_design_status.setText("Please click on an implemented design in the Design/File container above")
-            self.selected_design_status.setStyleSheet("color: #FF9800; font-size: 11px; margin-top: 5px;")
+        """View nextpnr placement/routing SVG paths and related metrics."""
+        if not self._require_selected_design_for_analysis("placement analysis"):
             return
-            
+
         try:
             from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
             pnr = NextPnRCommands()
-            
-            # Check if design has been implemented
             status = pnr.get_implementation_status(self.selected_design)
-            if not status.get('placed', False):
-                self.show_message("No Implementation Data", 
-                                f"Design '{self.selected_design}' has not been implemented.\n\n" +
-                                "Run Place & Route first to generate placement data.", "warning")
+            if not status.get("placed", False):
+                self.show_message(
+                    "No Implementation Data",
+                    f"Design '{self.selected_design}' has not been implemented.\n\n"
+                    "Run Place & Route first to generate placement data.",
+                    "warning",
+                )
                 return
-            
-            # Look for design-specific placement files
-            placement_files = []
-            
-            if os.path.exists(pnr.work_dir):
-                for file in os.listdir(pnr.work_dir):
-                    # Look for design-specific placement files
-                    if (file.startswith(self.selected_design) and 
-                        file.endswith(('.place', '.pin', '.pos', '.route'))):
-                        placement_files.append(os.path.join(pnr.work_dir, file))
-            
-            if placement_files:
-                # Combine placement data
-                placement_content = self._combine_placement_reports_for_design(placement_files, self.selected_design)
-                title = f"Placement & Routing Report - {self.selected_design}"
-                self._show_analysis_dialog(title, placement_content, "placement")
-            else:
-                self.show_message("No Placement Data", 
-                                f"No placement reports found for design '{self.selected_design}'.\n\n" +
-                                "The placement data may not have been generated properly.", "warning")
-                
+
+            artifacts = pnr.get_analysis_artifacts(self.selected_design)
+            lines = [
+                f"Design: {self.selected_design}",
+                "",
+                "=== nextpnr Placement / Routing Artifacts ===",
+            ]
+            impl = artifacts.get("impl_txt")
+            placed_svg = artifacts.get("placed_svg")
+            routed_svg = artifacts.get("routed_svg")
+            lines.append(f"Implementation: {impl or '(missing *_impl.txt)'}")
+            lines.append(f"Placed SVG:     {placed_svg or '(not generated)'}")
+            lines.append(f"Routed SVG:     {routed_svg or '(not generated)'}")
+            if pnr.last_bitstream_seed is not None:
+                lines.append(f"Bitstream seed: {pnr.last_bitstream_seed}")
+            lines.append("")
+            lines.append(
+                "Tip: open the SVG files in a browser or image viewer to inspect "
+                "placement and routing. Enable placed/routed SVG in Place & Route settings if missing."
+            )
+
+            report_json = artifacts.get("report_json")
+            if report_json:
+                metrics = NextPnRCommands.parse_report_metrics(report_json)
+                lines.append("")
+                lines.append(f"=== Metrics from {os.path.basename(report_json)} ===")
+                for summary_line in metrics.get("summary_lines") or []:
+                    lines.append(summary_line)
+                wl = metrics.get("wirelength")
+                if wl is not None:
+                    lines.append(f"Wirelength: {wl}")
+
+            if not placed_svg and not routed_svg and not impl:
+                self.show_message(
+                    "No Placement Data",
+                    f"No nextpnr placement outputs found for '{self.selected_design}'.",
+                    "warning",
+                )
+                return
+
+            title = f"Placement & Routing Report - {self.selected_design}"
+            self._show_analysis_dialog(title, "\n".join(lines), "placement")
+
+            # Offer to open SVGs when present
+            to_open = [p for p in (placed_svg, routed_svg) if p and os.path.isfile(p)]
+            if to_open:
+                reply = QMessageBox.question(
+                    self,
+                    "Open SVG previews?",
+                    "Open placed/routed SVG file(s) in the default viewer?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if reply == QMessageBox.Yes:
+                    for path in to_open:
+                        try:
+                            os.startfile(path)  # Windows
+                        except Exception as e:
+                            logging.warning("Could not open %s: %s", path, e)
+
         except Exception as e:
             logging.error(f"Error viewing placement report: {str(e)}")
             self.show_message("Error", f"Failed to view placement report:\n{str(e)}", "error")
-    
+
     def view_power_analysis(self):
-        """View power analysis information."""
-        self.show_message("Power Analysis Not Available", 
-                        "Power analysis is not currently supported.\n\n" +
-                        "The PnR tool (p_r) does not generate dedicated power analysis reports. " +
-                        "While the tool has power reduction options (--pwr_red, --fpga_mode lowpower), " +
-                        "it does not output detailed power consumption data.\n\n" +
-                        "For power analysis, you would need:\n" +
-                        "• A dedicated power analysis tool\n" +
-                        "• Post-implementation simulation with power-aware models\n" +
-                        "• Manual calculation based on device specifications", "info")
+        """Power analysis is not supported with the nextpnr / gmpack flow."""
+        self.show_message(
+            "Power Analysis Not Available",
+            "Power analysis is not supported by nextpnr-himbaechel / gmpack.\n\n"
+            "This button is disabled until a supported power-analysis flow is added.",
+            "info",
+        )
     
     # Simulation Methods
     def behavioral_simulation(self):
@@ -8980,40 +9122,29 @@ class MainWindow(QMainWindow):
                     except Exception as e:
                         logging.warning(f"Failed to save simulation settings: {e}")
                 
-                # Check if a testbench is selected
-                if hasattr(self, 'selected_testbench') and self.selected_testbench:
-                    testbench_entity = self.selected_testbench
-                    logging.info(f"🎯 Using selected testbench: {testbench_entity}")
-                    
-                    # For post-synthesis simulation, we need to find the synthesized entity
-                    # This is typically the entity that was synthesized, not the testbench
-                    # We'll need to determine which entity to simulate based on synthesis results
-                    
-                    # For now, we'll use the default post-synthesis simulation
-                    # TODO: Enhance this to use specific entity based on testbench selection
-                    success = sim_manager.post_synthesis_simulate()
-                    
-                    if success:
-                        logging.info(f"✅ Post-synthesis simulation completed successfully for {testbench_entity}!")
-                        # Refresh simulation status to show new VCD files
-                        QTimer.singleShot(1000, self.refresh_simulation_status)
-                        return f"Post-synthesis simulation completed successfully for {testbench_entity} ({simulation_time}{time_prefix})"
-                    else:
-                        logging.error(f"❌ Post-synthesis simulation failed for {testbench_entity}")
-                        return f"Post-synthesis simulation failed for {testbench_entity} - check logs for details"
+                testbench_name = None
+                if getattr(self, "selected_testbench", None):
+                    testbench_name = self.selected_testbench
+                    logging.info(f"🎯 Using selected testbench: {testbench_name}")
                 else:
-                    # No testbench selected, use default behavior
-                    logging.info("🔄 No testbench selected, using default post-synthesis simulation")
-                    success = sim_manager.post_synthesis_simulate()
-                    
-                    if success:
-                        logging.info("✅ Post-synthesis simulation completed successfully!")
-                        # Refresh simulation status to show new VCD files
-                        QTimer.singleShot(1000, self.refresh_simulation_status)
-                        return f"Post-synthesis simulation completed successfully ({simulation_time}{time_prefix})"
-                    else:
-                        logging.error("❌ Post-synthesis simulation failed")
-                        return "Post-synthesis simulation failed - check logs for details"
+                    logging.info("🔄 No testbench selected; will auto-detect for the DUT")
+
+                success = sim_manager.post_synthesis_simulate(
+                    entity_name=None,
+                    testbench_name=testbench_name,
+                )
+                
+                if success:
+                    target = testbench_name or "auto-detected design"
+                    logging.info(f"✅ Post-synthesis simulation completed successfully for {target}!")
+                    QTimer.singleShot(1000, self.refresh_simulation_status)
+                    return (
+                        f"Post-synthesis simulation completed successfully for "
+                        f"{target} ({simulation_time}{time_prefix})"
+                    )
+
+                logging.error("❌ Post-synthesis simulation failed")
+                return "Post-synthesis simulation failed - check logs for details"
                     
             except Exception as e:
                 logging.error(f"❌ Post-synthesis simulation error: {e}")
@@ -10080,7 +10211,7 @@ Simulation Options:
                         )
                     if hasattr(self, 'selected_board_status_label'):
                         self.selected_board_status_label.setText(
-                            f"Target Board: {self.selected_board['name']} (ZI FPGA Loader)"
+                            f"Target Board: {self.selected_board['name']}"
                         )
                     return
 
@@ -10100,64 +10231,109 @@ Simulation Options:
         except Exception as e:
             logging.warning(f"Could not update programming tool status: {e}")
 
+    def _set_upload_capability_button(
+        self, btn, enabled: bool, enabled_tip: str, disabled_tip: str
+    ) -> None:
+        """Enable/disable an Upload action button from board capability flags."""
+        if not btn:
+            return
+        btn.setEnabled(bool(enabled))
+        if enabled:
+            btn.setStyleSheet("")
+            btn.setToolTip(enabled_tip)
+        else:
+            btn.setStyleSheet("background-color: #4a4a4a; color: #888888;")
+            btn.setToolTip(disabled_tip)
+
     def update_programming_button_states(self):
-        """Update Program SRAM/Flash button states based on selected board capabilities."""
+        """Update Program SRAM/Flash and Verify buttons from selected board capabilities."""
         try:
-            if not hasattr(self, 'program_sram_btn') or not hasattr(self, 'program_flash_btn'):
+            if not getattr(self, "program_sram_btn", None) or not getattr(
+                self, "program_flash_btn", None
+            ):
                 return  # Buttons not yet created
-            
-            if not self.program_sram_btn or not self.program_flash_btn:
-                return  # Button references not available
-                
-            # Get board capabilities from boards manager
-            if hasattr(self, 'boards_manager') and self.boards_manager and hasattr(self, 'selected_board'):
-                board_identifier = self.selected_board.get('identifier', '')
-                if board_identifier and board_identifier != 'none':
+
+            board_details = None
+            if (
+                getattr(self, "boards_manager", None)
+                and getattr(self, "selected_board", None)
+            ):
+                board_identifier = self.selected_board.get("identifier", "")
+                if board_identifier and board_identifier != "none":
                     board_details = self.boards_manager.get_board_details(board_identifier)
-                    
-                    if board_details and 'programming_modes' in board_details:
-                        programming_modes = board_details['programming_modes']
-                        
-                        # Enable/disable SRAM button
-                        sram_supported = 'sram' in programming_modes
-                        self.program_sram_btn.setEnabled(sram_supported)
-                        if sram_supported:
-                            self.program_sram_btn.setStyleSheet("")  # Default styling
-                            self.program_sram_btn.setToolTip("Program bitstream to FPGA SRAM (volatile)")
-                        else:
-                            self.program_sram_btn.setStyleSheet("background-color: #4a4a4a; color: #888888;")
-                            self.program_sram_btn.setToolTip("SRAM programming not supported by this board")
-                        
-                        # Enable/disable Flash button
-                        flash_supported = 'flash' in programming_modes
-                        self.program_flash_btn.setEnabled(flash_supported)
-                        if flash_supported:
-                            self.program_flash_btn.setStyleSheet("")  # Default styling
-                            self.program_flash_btn.setToolTip("Program bitstream to FPGA Flash (non-volatile)")
-                        else:
-                            self.program_flash_btn.setStyleSheet("background-color: #4a4a4a; color: #888888;")
-                            self.program_flash_btn.setToolTip("Flash programming not supported by this board")
-                        
-                        logging.info(f"Updated programming buttons - SRAM: {sram_supported}, Flash: {flash_supported}")
-                        return
-            
-            # Fallback: enable both buttons if no board info available
-            self.program_sram_btn.setEnabled(True)
-            self.program_flash_btn.setEnabled(True)
-            self.program_sram_btn.setStyleSheet("")
-            self.program_flash_btn.setStyleSheet("")
-            self.program_sram_btn.setToolTip("Program bitstream to FPGA SRAM (volatile)")
-            self.program_flash_btn.setToolTip("Program bitstream to FPGA Flash (non-volatile)")
-            
+
+            if board_details:
+                programming_modes = board_details.get("programming_modes") or []
+                programming_tool = board_details.get(
+                    "programming_tool", "openfpgaloader"
+                )
+                # Explicit flag preferred; ZI loader never supports openFPGALoader --verify
+                if "supports_verify" in board_details:
+                    verify_supported = bool(board_details.get("supports_verify"))
+                else:
+                    verify_supported = programming_tool != "zi_fpga_loader"
+
+                sram_supported = "sram" in programming_modes
+                flash_supported = "flash" in programming_modes
+
+                self._set_upload_capability_button(
+                    self.program_sram_btn,
+                    sram_supported,
+                    "Program bitstream to FPGA SRAM (volatile)",
+                    "SRAM programming not supported by this board",
+                )
+                self._set_upload_capability_button(
+                    self.program_flash_btn,
+                    flash_supported,
+                    "Program bitstream to FPGA Flash (non-volatile)",
+                    "Flash programming not supported by this board",
+                )
+                self._set_upload_capability_button(
+                    getattr(self, "verify_bitstream_btn", None),
+                    verify_supported,
+                    "Verify programmed bitstream against file",
+                    "Bitstream verification not supported by this board",
+                )
+
+                logging.info(
+                    "Updated programming buttons - SRAM: %s, Flash: %s, Verify: %s",
+                    sram_supported,
+                    flash_supported,
+                    verify_supported,
+                )
+                return
+
+            # Fallback: enable all when board info is unavailable
+            self._set_upload_capability_button(
+                self.program_sram_btn,
+                True,
+                "Program bitstream to FPGA SRAM (volatile)",
+                "SRAM programming not supported by this board",
+            )
+            self._set_upload_capability_button(
+                self.program_flash_btn,
+                True,
+                "Program bitstream to FPGA Flash (non-volatile)",
+                "Flash programming not supported by this board",
+            )
+            self._set_upload_capability_button(
+                getattr(self, "verify_bitstream_btn", None),
+                True,
+                "Verify programmed bitstream against file",
+                "Bitstream verification not supported by this board",
+            )
+
         except Exception as e:
             logging.error(f"Error updating programming button states: {e}")
-            # Fallback: enable both buttons on error
-            if hasattr(self, 'program_sram_btn') and self.program_sram_btn:
-                self.program_sram_btn.setEnabled(True)
-                self.program_sram_btn.setStyleSheet("")
-            if hasattr(self, 'program_flash_btn') and self.program_flash_btn:
-                self.program_flash_btn.setEnabled(True)
-                self.program_flash_btn.setStyleSheet("")
+            # Fallback: enable buttons on error
+            for btn in (
+                getattr(self, "program_sram_btn", None),
+                getattr(self, "program_flash_btn", None),
+                getattr(self, "verify_bitstream_btn", None),
+            ):
+                if btn:
+                    btn.setEnabled(True)
+                    btn.setStyleSheet("")
     
     def program_sram(self):
         """Program bitstream to FPGA SRAM (volatile)."""
@@ -11135,14 +11311,8 @@ Simulation Options:
         info_layout = QVBoxLayout(info_frame)
         info_layout.setContentsMargins(10, 5, 10, 5)
         
-        # Header with strategy info and refresh button
+        # Header with refresh button
         header_layout = QHBoxLayout()
-        
-        # Implementation strategy info
-        self.impl_config_label = QLabel("Implementation Strategy: Not loaded")
-        self.impl_config_label.setStyleSheet("font-weight: bold; color: #64b5f6;")
-        header_layout.addWidget(self.impl_config_label)
-        
         header_layout.addStretch()
         
         # Refresh button
@@ -11240,19 +11410,12 @@ Simulation Options:
         try:
             if not self.has_project_loaded():
                 logging.debug("Skipping implementation status refresh — no project loaded")
-                if hasattr(self, 'impl_config_label'):
-                    self.impl_config_label.setText("Implementation Strategy: No project loaded")
-                    self.impl_config_label.setStyleSheet("font-weight: bold; color: #888888;")
                 if hasattr(self, 'implementation_tree'):
                     self.implementation_tree.clear()
                     self.selected_tree_item = None
                 return
 
             logging.info("🔄 Refreshing implementation status...")
-            
-            # Update implementation strategy display
-            self.impl_config_label.setText("Implementation Strategy: Balanced (Default)")
-            self.impl_config_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
             
             # Store current selection before clearing
             current_selection = getattr(self, 'selected_design', None)
@@ -11522,8 +11685,6 @@ Simulation Options:
             error_details = traceback.format_exc()
             logging.error(f"Error refreshing implementation status: {e}")
             logging.error(f"Full traceback: {error_details}")
-            self.impl_config_label.setText("Implementation Strategy: Error loading")
-            self.impl_config_label.setStyleSheet("font-weight: bold; color: #F44336;")
     
     def _find_constraint_files(self):
         """Find available constraint files for implementation."""
@@ -11711,7 +11872,11 @@ Simulation Options:
         dialog = QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setModal(True)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+        # Fixed size avoids parent layout jitter when the report dialog opens/closes
         dialog.resize(1000, 700)
+        dialog.setMinimumSize(640, 480)
         
         layout = QVBoxLayout(dialog)
         
