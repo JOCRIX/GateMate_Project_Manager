@@ -589,7 +589,8 @@ class HierarchyManager:
         files_info = {
             "src": {},
             "top": {},
-            "testbench": {}
+            "testbench": {},
+            "testbench_verilog": {},
         }
         
         try:
@@ -599,12 +600,17 @@ class HierarchyManager:
                 return files_info
                 
             # Collect files from each section
-            for section in ["src", "top", "testbench"]:
+            for section in ["src", "top", "testbench", "testbench_verilog"]:
                 if section in hierarchy and isinstance(hierarchy[section], dict):
                     for file_name, file_path in hierarchy[section].items():
                         files_info[section][file_name] = file_path
                         
-            self._log("info", f"Retrieved source file info: {len(files_info['src'])} src, {len(files_info['top'])} top, {len(files_info['testbench'])} testbench files")
+            self._log(
+                "info",
+                f"Retrieved source file info: {len(files_info['src'])} src, "
+                f"{len(files_info['top'])} top, {len(files_info['testbench'])} VHDL TB, "
+                f"{len(files_info['testbench_verilog'])} Verilog TB files",
+            )
             
         except Exception as e:
             self._log("error", f"Error getting source file info: {e}")
@@ -671,8 +677,8 @@ class HierarchyManager:
             raise Exception("No valid project configuration found. Please create a project first using 'Create New Project'.")
         
         # Validate file type
-        if file_type not in ['src', 'testbench', 'top']:
-            self._log("error", f"Invalid file type: {file_type}. Must be 'src', 'testbench', or 'top'")
+        if file_type not in ['src', 'testbench', 'top', 'testbench_verilog']:
+            self._log("error", f"Invalid file type: {file_type}. Must be 'src', 'testbench', 'top', or 'testbench_verilog'")
             raise ValueError(f"Invalid file type: {file_type}")
         
         # Check if file exists
@@ -698,6 +704,18 @@ class HierarchyManager:
             else:
                 self._log("error", "Project testbench directory not properly configured")
                 raise Exception("Project testbench directory not properly configured. Please create a project first.")
+        elif file_type == 'testbench_verilog':
+            # Ensure legacy projects get the verilog TB directory
+            self.ensure_post_impl_project_structure()
+            dest_dir = self.config.get("project_structure", {}).get("testbench_verilog", [])
+            if dest_dir and isinstance(dest_dir, list) and len(dest_dir) > 0:
+                dest_dir = dest_dir[0]
+            else:
+                self._log("error", "Project Verilog testbench directory not properly configured")
+                raise Exception(
+                    "Project Verilog testbench directory not properly configured. "
+                    "Please create/update the project structure."
+                )
         
         # Validate that destination directory is not just current directory
         if dest_dir == "." or dest_dir == os.getcwd():
@@ -761,10 +779,14 @@ class HierarchyManager:
         detected_files = {
             "src": {},
             "testbench": {},
-            "top": {}
+            "top": {},
+            "testbench_verilog": {},
         }
         
         try:
+            # Ensure Verilog TB / post-impl dirs exist for older projects
+            self.ensure_post_impl_project_structure()
+
             # Get current hierarchy to compare against
             current_hierarchy = self.get_hierarchy()
             if current_hierarchy is True:
@@ -781,43 +803,60 @@ class HierarchyManager:
                     directories_to_check["src"] = src_dir
                     directories_to_check["top"] = src_dir  # Top files are also in src directory
             
-            # Get testbench directory
+            # Get testbench directory (VHDL)
             tb_dirs = self.config.get("project_structure", {}).get("testbench", [])
             if tb_dirs:
                 tb_dir = tb_dirs[0] if isinstance(tb_dirs, list) else tb_dirs
                 if os.path.exists(tb_dir):
                     directories_to_check["testbench"] = tb_dir
+
+            # Get Verilog testbench directory (post-implementation)
+            vtb_dirs = self.config.get("project_structure", {}).get("testbench_verilog", [])
+            if vtb_dirs:
+                vtb_dir = vtb_dirs[0] if isinstance(vtb_dirs, list) else vtb_dirs
+                if os.path.exists(vtb_dir):
+                    directories_to_check["testbench_verilog"] = vtb_dir
             
-            # Scan each directory for VHDL files
+            # Scan each directory for HDL files
             for category, directory in directories_to_check.items():
                 self._log(log_level, f"Scanning {directory} for {category} files")
                 
                 try:
                     for file_name in os.listdir(directory):
-                        if file_name.endswith(('.vhd', '.vhdl')):
-                            file_path = os.path.join(directory, file_name)
+                        file_path = os.path.join(directory, file_name)
+                        if not os.path.isfile(file_path):
+                            continue
+
+                        if category == "testbench_verilog":
+                            if not file_name.lower().endswith(('.v', '.sv')):
+                                continue
+                        else:
+                            if not file_name.endswith(('.vhd', '.vhdl')):
+                                continue
                             
-                            # Check if file is already in hierarchy
-                            already_tracked = False
-                            if isinstance(current_hierarchy, dict):
-                                for tracked_category in ["src", "testbench", "top"]:
-                                    if (tracked_category in current_hierarchy and 
-                                        isinstance(current_hierarchy[tracked_category], dict) and
-                                        file_name in current_hierarchy[tracked_category]):
-                                        already_tracked = True
-                                        break
+                        # Check if file is already in hierarchy
+                        already_tracked = False
+                        if isinstance(current_hierarchy, dict):
+                            for tracked_category in ["src", "testbench", "top", "testbench_verilog"]:
+                                if (tracked_category in current_hierarchy and 
+                                    isinstance(current_hierarchy[tracked_category], dict) and
+                                    file_name in current_hierarchy[tracked_category]):
+                                    already_tracked = True
+                                    break
+                        
+                        if not already_tracked:
+                            # Categorize the file based on naming convention
+                            lower_file = file_name.lower()
+                            if category == "testbench_verilog":
+                                detected_files["testbench_verilog"][file_name] = file_path
+                            elif category == "testbench" or lower_file.endswith("_tb.vhd") or lower_file.endswith("_tb.vhdl"):
+                                detected_files["testbench"][file_name] = file_path
+                            elif lower_file.endswith("_top.vhd") or lower_file.endswith("_top.vhdl"):
+                                detected_files["top"][file_name] = file_path
+                            else:
+                                detected_files["src"][file_name] = file_path
                             
-                            if not already_tracked:
-                                # Categorize the file based on naming convention
-                                lower_file = file_name.lower()
-                                if category == "testbench" or lower_file.endswith("_tb.vhd") or lower_file.endswith("_tb.vhdl"):
-                                    detected_files["testbench"][file_name] = file_path
-                                elif lower_file.endswith("_top.vhd") or lower_file.endswith("_top.vhdl"):
-                                    detected_files["top"][file_name] = file_path
-                                else:
-                                    detected_files["src"][file_name] = file_path
-                                
-                                self._log(log_level, f"Detected untracked file: {file_name} in {category}")
+                            self._log(log_level, f"Detected untracked file: {file_name} in {category}")
                                 
                 except Exception as e:
                     self._log("error", f"Error scanning directory {directory}: {e}")
@@ -1072,11 +1111,146 @@ class HierarchyManager:
         self._log("info", f"Batch removal complete: {summary['successfully_removed']} removed, {summary['not_found']} not found")
         return summary
 
+    def ensure_post_impl_project_structure(self) -> bool:
+        """Ensure directories/config keys for post-implementation simulation exist.
+
+        Migrates older project configs that lack testbench_verilog or
+        sim/post-implementation / impl/netlist / impl/timing.
+        """
+        if not self.config or "project_structure" not in self.config:
+            return False
+
+        project_path = self.config.get("project_path") or os.getcwd()
+        structure = self.config.setdefault("project_structure", {})
+        changed = False
+
+        vtb = structure.get("testbench_verilog")
+        if not vtb or not isinstance(vtb, list) or not vtb:
+            structure["testbench_verilog"] = [os.path.join(project_path, "testbench", "verilog")]
+            changed = True
+
+        sim = structure.setdefault("sim", {})
+        if not isinstance(sim, dict):
+            sim = {}
+            structure["sim"] = sim
+            changed = True
+        if not sim.get("post-implementation"):
+            sim["post-implementation"] = [
+                os.path.join(project_path, "sim", "post-implementation")
+            ]
+            changed = True
+
+        impl = structure.setdefault("impl", {})
+        if not isinstance(impl, dict):
+            impl = {}
+            structure["impl"] = impl
+            changed = True
+        if not impl.get("timing"):
+            impl["timing"] = [os.path.join(project_path, "timing")]
+            changed = True
+        if not impl.get("netlist"):
+            impl["netlist"] = [os.path.join(project_path, "netlist")]
+            changed = True
+
+        dirs_to_make = []
+        for vals in (structure.get("testbench_verilog") or [],):
+            if isinstance(vals, list):
+                dirs_to_make.extend(vals)
+        for key in ("post-implementation",):
+            vals = (structure.get("sim") or {}).get(key) or []
+            if isinstance(vals, list):
+                dirs_to_make.extend(vals)
+        for key in ("timing", "netlist"):
+            vals = (structure.get("impl") or {}).get(key) or []
+            if isinstance(vals, list):
+                dirs_to_make.extend(vals)
+
+        for d in dirs_to_make:
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError as e:
+                self._log("warning", f"Could not create directory {d}: {e}")
+
+        hierarchy = self.config.setdefault("hdl_project_hierarchy", {})
+        if "testbench_verilog" not in hierarchy:
+            hierarchy["testbench_verilog"] = {}
+            changed = True
+
+        if changed:
+            try:
+                self.update_config()
+                self._log("info", "Updated project structure for post-implementation simulation")
+            except Exception as e:
+                self._log("warning", f"Could not persist post-impl structure update: {e}")
+        return True
+
+    def parse_module_name_from_verilog(self, verilog_file_path: str):
+        """Return the first module name found in a Verilog/SystemVerilog file."""
+        if not verilog_file_path or not os.path.exists(verilog_file_path):
+            return None
+        try:
+            import re
+            with open(verilog_file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("//"):
+                    continue
+                m = re.match(r"module\s+(\w+)", stripped)
+                if m:
+                    return m.group(1)
+        except Exception as e:
+            self._log("error", f"Error parsing Verilog module from {verilog_file_path}: {e}")
+        return None
+
+    def get_available_verilog_testbenches(self):
+        """Return Verilog/SystemVerilog testbench module names for post-impl sim."""
+        testbenches = []
+        try:
+            self.ensure_post_impl_project_structure()
+            hierarchy = self.get_hierarchy()
+            if hierarchy is True or not isinstance(hierarchy, dict):
+                return testbenches
+
+            section = hierarchy.get("testbench_verilog") or {}
+            if not isinstance(section, dict):
+                return testbenches
+
+            for file_name, file_path in section.items():
+                if not str(file_name).lower().endswith((".v", ".sv")):
+                    continue
+                module_name = self.parse_module_name_from_verilog(file_path)
+                if not module_name:
+                    module_name = os.path.splitext(file_name)[0]
+                if module_name and module_name not in testbenches:
+                    testbenches.append(module_name)
+                    self._log(
+                        "info",
+                        f"Found Verilog testbench module '{module_name}' in {file_name}",
+                    )
+        except Exception as e:
+            self._log("error", f"Error scanning for Verilog testbenches: {e}")
+        return sorted(testbenches)
+
+    def get_verilog_testbench_file(self, module_name: str):
+        """Return absolute path for a Verilog TB module name, or None."""
+        try:
+            hierarchy = self.get_hierarchy()
+            if hierarchy is True or not isinstance(hierarchy, dict):
+                return None
+            section = hierarchy.get("testbench_verilog") or {}
+            if not isinstance(section, dict):
+                return None
+            for file_name, file_path in section.items():
+                parsed = self.parse_module_name_from_verilog(file_path)
+                if parsed == module_name or os.path.splitext(file_name)[0] == module_name:
+                    return file_path
+        except Exception as e:
+            self._log("error", f"Error resolving Verilog testbench path: {e}")
+        return None
+
+
 if __name__ == "__main__":
     hierarchy = HierarchyManager(None)
-    #test = hierarchy.find_hdl_sources()
-    #hierarchy.sort_hdl_sources(test)
     hierarchy.init_sources()
-    #hierarchy.remove_source("test.vhd", do_update=True)
-    #hierarchy.set_testbench("anothertb_tb.vhd")
-   # hierarchy.scan_hdl_sources() 

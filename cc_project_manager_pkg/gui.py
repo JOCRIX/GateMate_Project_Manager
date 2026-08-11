@@ -265,7 +265,9 @@ class ToolchainPathDialog(QDialog):
             ("yosys", "Yosys", "Path to yosys.exe from OSS CAD Suite"),
             ("nextpnr_himbaechel", "nextpnr-himbaechel", "Path to nextpnr-himbaechel.exe (GateMate P&R)"),
             ("gmpack", "gmpack", "Path to gmpack.exe (bitstream packer)"),
-            ("openfpgaloader", "openFPGALoader", "Optional: Path to openFPGALoader.exe")
+            ("openfpgaloader", "openFPGALoader", "Optional: Path to openFPGALoader.exe"),
+            ("iverilog", "Icarus iverilog", "Path to iverilog.exe (post-implementation simulation)"),
+            ("vvp", "Icarus vvp", "Path to vvp.exe (Icarus runtime for post-implementation simulation)"),
         ]
         
         for tool_key, tool_name, tooltip in tools:
@@ -367,6 +369,8 @@ class ToolchainPathDialog(QDialog):
                 "nextpnr": "nextpnr_himbaechel",
                 "gmpack": "gmpack",
                 "openFPGALoader": "openfpgaloader",
+                "Icarus iverilog": "iverilog",
+                "Icarus vvp": "vvp",
             }
             
             for tool_name, tool_key in tools.items():
@@ -407,6 +411,8 @@ class ToolchainPathDialog(QDialog):
             "nextpnr_himbaechel": "nextpnr-himbaechel",
             "gmpack": "gmpack",
             "openfpgaloader": "openFPGALoader",
+            "iverilog": "Icarus iverilog",
+            "vvp": "Icarus vvp",
         }
         tool_name = tool_names.get(tool_key, tool_key)
         
@@ -429,6 +435,8 @@ class ToolchainPathDialog(QDialog):
             "nextpnr_himbaechel": "nextpnr-himbaechel",
             "gmpack": "gmpack",
             "openfpgaloader": "openFPGALoader",
+            "iverilog": "Icarus iverilog",
+            "vvp": "Icarus vvp",
         }
         tool_name = tool_names.get(tool_key, tool_key)
         
@@ -451,6 +459,8 @@ class ToolchainPathDialog(QDialog):
             "nextpnr_himbaechel": "nextpnr-himbaechel.exe",
             "gmpack": "gmpack.exe",
             "openfpgaloader": "openFPGALoader.exe",
+            "iverilog": "iverilog.exe",
+            "vvp": "vvp.exe",
         }
         expected_name = expected_names.get(tool_key, f"{tool_key}.exe")
         
@@ -466,14 +476,21 @@ class ToolchainPathDialog(QDialog):
         version_flag = "--version"
         if tool_key == "openfpgaloader":
             version_flag = "--Version"  # openFPGALoader uses capital V
+        elif tool_key in ("iverilog", "vvp"):
+            version_flag = "-V"
         
         try:
             result = subprocess.run([path, version_flag], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
+            # Icarus often returns non-zero for -V but still prints a banner
+            banner = (result.stdout or "") + (result.stderr or "")
+            ok = result.returncode == 0 or (
+                tool_key in ("iverilog", "vvp") and ("Icarus" in banner or "Verilog" in banner)
+            )
+            if ok:
                 QMessageBox.information(
                     self, 
                     "Validation Successful", 
-                    f"✅ {tool_name} is working correctly!\n\nVersion info:\n{result.stdout[:200]}..."
+                    f"✅ {tool_name} is working correctly!\n\nVersion info:\n{banner[:200]}..."
                 )
             else:
                 QMessageBox.warning(
@@ -1344,7 +1361,11 @@ class SimulationRunDialog(QDialog):
         self.simulation_type = simulation_type
         self.setWindowTitle(f"Run {simulation_type.title()} Simulation")
         self.setModal(True)
-        self.resize(520, 420)
+        # Post-impl blurb is longer (limitations); give the dialog a bit more room
+        if (simulation_type or "").lower().replace("_", "-") == "post-implementation":
+            self.resize(560, 520)
+        else:
+            self.resize(520, 420)
         
         # Initialize SimulationManager to get current settings
         try:
@@ -1375,6 +1396,7 @@ class SimulationRunDialog(QDialog):
         if flow_blurb:
             flow_label = QLabel(flow_blurb)
             flow_label.setWordWrap(True)
+            flow_label.setTextFormat(Qt.PlainText)
             flow_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
             flow_label.setStyleSheet(
                 "color: #CFD8DC; font-size: 11px; padding: 8px 10px; "
@@ -1387,12 +1409,30 @@ class SimulationRunDialog(QDialog):
         info_layout = QVBoxLayout(info_group)
         
         # Show selected testbench if available
-        if hasattr(self.parent(), 'selected_testbench') and self.parent().selected_testbench:
-            testbench_info = f"Selected Testbench: {self.parent().selected_testbench}"
+        parent = self.parent()
+        selected_name = None
+        selected_lang = None
+        if parent is not None:
+            sim_type = (self.simulation_type or "").lower().replace("_", "-")
+            if sim_type == "post-implementation":
+                selected_name = getattr(parent, "selected_verilog_testbench", None)
+                if not selected_name and getattr(parent, "selected_testbench_language", None) == "verilog":
+                    selected_name = getattr(parent, "selected_testbench", None)
+                selected_lang = "verilog" if selected_name else None
+            elif getattr(parent, "selected_testbench", None):
+                selected_name = parent.selected_testbench
+                selected_lang = getattr(parent, "selected_testbench_language", None)
+
+        if selected_name:
+            lang_suffix = f" ({selected_lang})" if selected_lang else ""
+            testbench_info = f"Selected Testbench: {selected_name}{lang_suffix}"
             testbench_label = QLabel(testbench_info)
             testbench_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
         else:
-            testbench_label = QLabel("Selected Testbench: None (will use default)")
+            if (self.simulation_type or "").lower().replace("_", "-") == "post-implementation":
+                testbench_label = QLabel("Selected Testbench: None (select a Verilog TB first)")
+            else:
+                testbench_label = QLabel("Selected Testbench: None (will use default)")
             testbench_label.setStyleSheet("color: #FFA726; font-weight: bold;")
         
         info_layout.addWidget(testbench_label)
@@ -1489,6 +1529,22 @@ class SimulationRunDialog(QDialog):
                 "GHDL synthesizes the design to a VHDL netlist, then your testbench "
                 "stimulates that netlist. This is not Yosys/GateMate synthesis and not "
                 "post-place-and-route / SDF timing simulation."
+            )
+        if sim_type == "post-implementation":
+            return (
+                "After place and route. Runs Icarus Verilog on your Verilog testbench "
+                "with the post-P&R netlist and SDF timing data from nextpnr. "
+                "Waveforms are VCD files viewed in GTKWave (Icarus is the simulator, "
+                "not the viewer).\n"
+                "\n"
+                "Limitations (current open toolchain):\n"
+                "• This is mainly a post-P&R functional check (packed/routed connectivity), "
+                "not a full timing-accurate back-annotation.\n"
+                "• nextpnr SDF is applied when available, but most cell IOPATH delays do not "
+                "annotate — open GateMate cell models lack the matching specify timing paths.\n"
+                "• PLL/clock behavior often comes from a behavioral stand-in, not silicon/"
+                "SDF path delays. Authoritative timing models would need to come from "
+                "Cologne Chip (or an equivalent vendor library)."
             )
         return ""
     
@@ -3173,6 +3229,7 @@ class MainWindow(QMainWindow):
             ("Create New Project", self.create_new_project, "Create a new FPGA project with directory structure"),
             ("Load Existing Project", self.load_existing_project, "Load and open an existing project from directory"),
             ("Add VHDL Files", self.add_vhdl_file, "Add VHDL source files to the current project (supports multiple selection)"),
+            ("Add Verilog Testbench", self.add_verilog_testbench, "Add a Verilog/SystemVerilog testbench for post-implementation simulation (*.v / *.sv)"),
             ("Remove VHDL File", self.remove_vhdl_file, "Remove VHDL file from the project"),
             ("Detect Manual Files", self.detect_manual_files, "Sync project with src, testbench, and constraints folders (add new files, remove deleted ones)"),
             ("View Project Logs", self.view_project_logs, "View project manager log files and operations history")
@@ -3360,8 +3417,9 @@ class MainWindow(QMainWindow):
         buttons = [
             ("Behavioral Simulation", self.behavioral_simulation, "Run RTL/behavioral simulation with a VHDL testbench (before synthesis)"),
             ("Post-Synthesis Simulation", self.post_synthesis_simulation, "Simulate GHDL-synthesized VHDL netlist with your testbench (not Yosys/P&R)"),
+            ("Post-Implementation Simulation", self.post_implementation_simulation, "Run Icarus post-P&R timing simulation with a Verilog testbench + SDF"),
             ("Configure Simulation", self.configure_simulation, "Configure simulation settings and VHDL/IEEE standards"),
-            ("Launch Waveform Viewer", self.launch_waveform_viewer, "Open GTKWave for waveform analysis"),
+            ("Launch Waveform Viewer", self.launch_waveform_viewer, "Open GTKWave for waveform analysis (behavioral, post-synth, and post-impl VCDs)"),
             ("View Simulation Logs", self.view_simulation_logs, "View simulation log files and reports")
         ]
         
@@ -3514,7 +3572,7 @@ class MainWindow(QMainWindow):
         
         # Create status labels and preference dropdowns for each tool
         self.tool_status_labels = {}
-        tools = ["GHDL", "Yosys", "nextpnr", "gmpack", "openFPGALoader", "GTKWave"]
+        tools = ["GHDL", "Yosys", "nextpnr", "gmpack", "openFPGALoader", "Icarus iverilog", "Icarus vvp", "GTKWave"]
         
         for tool in tools:
             tool_frame = QFrame()
@@ -3626,6 +3684,8 @@ class MainWindow(QMainWindow):
                 "nextpnr": "nextpnr_himbaechel",
                 "gmpack": "gmpack",
                 "openFPGALoader": "openfpgaloader",
+                "Icarus iverilog": "iverilog",
+                "Icarus vvp": "vvp",
                 "GTKWave": "gtkwave",
             }
             internal_tool_name = tool_map.get(tool_name)
@@ -3666,6 +3726,8 @@ class MainWindow(QMainWindow):
                 "nextpnr": "nextpnr_himbaechel",
                 "gmpack": "gmpack",
                 "openFPGALoader": "openfpgaloader",
+                "Icarus iverilog": "iverilog",
+                "Icarus vvp": "vvp",
                 "GTKWave": "gtkwave",
             }
                     for tool_name, dropdown in self.tool_preference_dropdowns.items():
@@ -3788,6 +3850,8 @@ class MainWindow(QMainWindow):
                     "nextpnr": "nextpnr_himbaechel",
                     "gmpack": "gmpack",
                     "openFPGALoader": "openfpgaloader",
+                    "Icarus iverilog": "iverilog",
+                    "Icarus vvp": "vvp",
                 }
                 
                 def _short_version(raw: str) -> str:
@@ -4384,33 +4448,54 @@ class MainWindow(QMainWindow):
         info_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(info_frame)
         
-        # Entities and synthesis results tree
+        # Entities and synthesis results tree — expandable per synthesized design
         self.synthesis_tree = QTreeWidget()
-        self.synthesis_tree.setHeaderLabels(["Entity / Design", "Type", "Synthesizable", "Status", "Strategy", "Synthesized"])
+        self.synthesis_tree.setHeaderLabels(
+            ["Entity / Design", "Type", "Synthesizable", "Status", "Strategy", "Synthesized"]
+        )
         
-        # Configure tree widget for better display (same as project files tree)
-        self.synthesis_tree.setRootIsDecorated(False)  # Remove tree decorations
-        self.synthesis_tree.setAlternatingRowColors(False)  # Disable alternating colors
+        self.synthesis_tree.setRootIsDecorated(True)
+        self.synthesis_tree.setAlternatingRowColors(False)
         self.synthesis_tree.setUniformRowHeights(True)
-        self.synthesis_tree.setIndentation(15)  # Minimal indentation
+        self.synthesis_tree.setIndentation(20)
+        self.synthesis_tree.setAnimated(True)
         
-        # Enable single selection
         self.synthesis_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.synthesis_tree.setFocusPolicy(Qt.StrongFocus)
-        
-        # Remove any visual indicators that might cause white boxes
-        self.synthesis_tree.setItemsExpandable(False)
-        self.synthesis_tree.setExpandsOnDoubleClick(False)
-        
-        # Remove white boxes by clearing any inherited styles (same fix as project files tree)
-        self.synthesis_tree.setStyleSheet("")  # Clear any inherited styles
+        self.synthesis_tree.setItemsExpandable(True)
+        self.synthesis_tree.setExpandsOnDoubleClick(True)
+        # Dark theme: default branch arrows are often invisible (dark-on-dark).
+        self.synthesis_tree.setStyleSheet("""
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border: 1px solid #90CAF9;
+                background: #37474F;
+                margin: 2px;
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border: 1px solid #81C784;
+                background: #2E7D32;
+                margin: 2px;
+            }
+            QTreeWidget::branch:has-siblings:!adjoins-item {
+                border-image: none;
+                border: none;
+            }
+            QTreeWidget::branch:!has-children:!has-siblings:adjoins-item,
+            QTreeWidget::branch:!has-children:has-siblings:adjoins-item {
+                border-image: none;
+                border: none;
+            }
+        """)
         
         # Set column widths
-        self.synthesis_tree.setColumnWidth(0, 200)  # Entity/Design
-        self.synthesis_tree.setColumnWidth(1, 80)   # Type
+        self.synthesis_tree.setColumnWidth(0, 220)  # Entity/Design
+        self.synthesis_tree.setColumnWidth(1, 90)   # Type
         self.synthesis_tree.setColumnWidth(2, 100)  # Synthesizable
-        self.synthesis_tree.setColumnWidth(3, 100)  # Status
-        self.synthesis_tree.setColumnWidth(4, 100)  # Strategy
+        self.synthesis_tree.setColumnWidth(3, 120)  # Status
+        self.synthesis_tree.setColumnWidth(4, 120)  # Strategy
+        self.synthesis_tree.setColumnWidth(5, 150)  # Synthesized
         
         layout.addWidget(self.synthesis_tree)
         
@@ -4479,8 +4564,8 @@ class MainWindow(QMainWindow):
         self.testbench_tree = QTreeWidget()
         self.testbench_tree.setHeaderLabels(["Testbench", "File", "Entity", "Status"])
         self.testbench_tree.setAlternatingRowColors(True)
-        self.testbench_tree.setRootIsDecorated(False)
-        self.testbench_tree.setMaximumHeight(200)
+        self.testbench_tree.setRootIsDecorated(True)
+        self.testbench_tree.setMaximumHeight(280)
         self.testbench_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.testbench_tree.setFocusPolicy(Qt.StrongFocus)
         self.testbench_tree.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -4571,6 +4656,8 @@ class MainWindow(QMainWindow):
         
         # Initialize selected testbench and simulation
         self.selected_testbench = None
+        self.selected_verilog_testbench = None
+        self.selected_testbench_language = None
         self.selected_testbench_item = None
         self.selected_simulation_item = None
         # self.simulation_status_timer.start(30000)  # Auto-refresh disabled - use manual refresh button instead
@@ -4778,31 +4865,67 @@ class MainWindow(QMainWindow):
             # Clear and populate testbench tree
             self.testbench_tree.clear()
             
-            # Get available testbenches
+            # Get available testbenches (VHDL + Verilog groups)
             original_cwd = self._enter_project_directory()
             try:
                 from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
+                from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+
                 hierarchy_manager = HierarchyManager()
+                hierarchy_manager.ensure_post_impl_project_structure()
                 available_testbenches = hierarchy_manager.get_available_testbenches()
                 files_info = hierarchy_manager.get_source_files_info()
-                
+                verilog_testbenches = hierarchy_manager.get_available_verilog_testbenches()
+
+                # Resolve design for post-impl artifact children
+                design_for_artifacts = None
+                try:
+                    pnr = NextPnRCommands()
+                    placed_designs = pnr.get_available_placed_designs() or []
+                    if getattr(self, "selected_design", None) and self.selected_design in placed_designs:
+                        design_for_artifacts = self.selected_design
+                    elif placed_designs:
+                        design_for_artifacts = placed_designs[0]
+                except Exception as e:
+                    logging.debug(f"Could not resolve placed designs for TB tree: {e}")
+
+                post_impl_artifacts = {}
+                post_impl_vcds = []
+                if design_for_artifacts and sim_manager is not None:
+                    try:
+                        post_impl_artifacts = sim_manager.get_post_impl_artifacts(design_for_artifacts) or {}
+                    except Exception as e:
+                        logging.debug(f"Could not load post-impl artifacts: {e}")
+                    try:
+                        available_sims = sim_manager.get_available_simulations()
+                        post_impl_vcds = available_sims.get("post-implementation", []) or []
+                    except Exception as e:
+                        logging.debug(f"Could not load post-impl VCDs: {e}")
+
+                vhdl_group = QTreeWidgetItem(self.testbench_tree, [
+                    "VHDL (Behavioral / Post-Synthesis)",
+                    "",
+                    "",
+                    f"{len(available_testbenches)} TB(s)" if available_testbenches else "None",
+                ])
+                vhdl_group.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+                vhdl_group.setForeground(0, QColor("#64b5f6"))
+                vhdl_group.setFlags(vhdl_group.flags() & ~Qt.ItemIsSelectable)
+
                 if available_testbenches:
                     for testbench_entity in available_testbenches:
-                        # Find the corresponding file for this testbench entity
                         testbench_file = "Unknown"
                         status = "Ready"
-                        
-                        # Look in testbench files first
+
                         for file_name, file_path in files_info.get("testbench", {}).items():
                             try:
                                 entity_name = hierarchy_manager.parse_entity_name_from_vhdl(file_path)
                                 if entity_name == testbench_entity:
                                     testbench_file = file_name
                                     break
-                            except:
+                            except Exception:
                                 continue
-                        
-                        # If not found, look in top files
+
                         if testbench_file == "Unknown":
                             for file_name, file_path in files_info.get("top", {}).items():
                                 if '_tb' in file_name.lower():
@@ -4811,36 +4934,170 @@ class MainWindow(QMainWindow):
                                         if entity_name == testbench_entity:
                                             testbench_file = file_name
                                             break
-                                    except:
+                                    except Exception:
                                         continue
-                        
-                        item = QTreeWidgetItem(self.testbench_tree, [
+
+                        item = QTreeWidgetItem(vhdl_group, [
                             testbench_entity,
                             testbench_file,
                             testbench_entity,
                             status
                         ])
-                        
-                        # Store testbench entity name for selection
-                        item.setData(0, Qt.UserRole, testbench_entity)
-                        
-                        # Color code based on status
-                        if status == "Ready":
-                            item.setForeground(3, QColor("#4CAF50"))
-                        else:
-                            item.setForeground(3, QColor("#FFA726"))
-                    
-                    logging.info(f"✅ Found {len(available_testbenches)} testbenches: {', '.join(available_testbenches)}")
+                        item.setData(0, Qt.UserRole, {
+                            "language": "vhdl",
+                            "name": testbench_entity,
+                        })
+                        item.setForeground(3, QColor("#4CAF50"))
+
+                    logging.info(
+                        f"✅ Found {len(available_testbenches)} VHDL testbenches: "
+                        f"{', '.join(available_testbenches)}"
+                    )
                 else:
-                    # Add message when no testbenches found
-                    no_tb_item = QTreeWidgetItem(self.testbench_tree, [
-                        "No testbenches found",
-                        "Add testbench files to project",
+                    no_tb_item = QTreeWidgetItem(vhdl_group, [
+                        "No VHDL testbenches found",
+                        "Add VHDL testbench files to project",
                         "",
                         "Missing"
                     ])
                     no_tb_item.setForeground(0, QColor("#FFA726"))
                     no_tb_item.setForeground(3, QColor("#F44336"))
+
+                vhdl_group.setExpanded(True)
+
+                verilog_group = QTreeWidgetItem(self.testbench_tree, [
+                    "Verilog (Post-Implementation)",
+                    "",
+                    "",
+                    f"{len(verilog_testbenches)} TB(s)" if verilog_testbenches else "None",
+                ])
+                verilog_group.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+                verilog_group.setForeground(0, QColor("#9C27B0"))
+                verilog_group.setFlags(verilog_group.flags() & ~Qt.ItemIsSelectable)
+
+                if verilog_testbenches:
+                    for module_name in verilog_testbenches:
+                        tb_path = hierarchy_manager.get_verilog_testbench_file(module_name) or ""
+                        tb_file = os.path.basename(tb_path) if tb_path else "Unknown"
+                        item = QTreeWidgetItem(verilog_group, [
+                            module_name,
+                            tb_file,
+                            module_name,
+                            "Ready",
+                        ])
+                        item.setData(0, Qt.UserRole, {
+                            "language": "verilog",
+                            "name": module_name,
+                            "path": tb_path,
+                        })
+                        item.setForeground(3, QColor("#4CAF50"))
+
+                        if post_impl_artifacts:
+                            sources_item = QTreeWidgetItem(item, ["Sources", "", "", ""])
+                            sources_item.setFlags(sources_item.flags() & ~Qt.ItemIsSelectable)
+                            sources_item.setForeground(0, QColor("#81C784"))
+
+                            for label, key in (
+                                ("TB file", None),
+                                ("netlist_verilog", "netlist_verilog"),
+                                ("cells_sim", "cells_sim"),
+                            ):
+                                if key is None:
+                                    value = tb_path or "—"
+                                    display = value
+                                else:
+                                    value = post_impl_artifacts.get(key)
+                                    display = value if value else "Missing"
+                                child = QTreeWidgetItem(sources_item, [
+                                    label,
+                                    os.path.basename(display) if value and value != "—" else display,
+                                    "",
+                                    "Ready" if value and value != "—" else "Missing",
+                                ])
+                                child.setFlags(child.flags() & ~Qt.ItemIsSelectable)
+                                child.setForeground(
+                                    3,
+                                    QColor("#4CAF50") if value and value != "—" else QColor("#F44336"),
+                                )
+                                if value and value not in ("—", "Missing"):
+                                    child.setToolTip(1, str(value))
+
+                            timing_item = QTreeWidgetItem(item, ["Timing", "", "", ""])
+                            timing_item.setFlags(timing_item.flags() & ~Qt.ItemIsSelectable)
+                            timing_item.setForeground(0, QColor("#FFA726"))
+
+                            for label, key in (("sdf", "sdf"), ("report_json", "report_json")):
+                                value = post_impl_artifacts.get(key)
+                                display = value if value else "Missing"
+                                child = QTreeWidgetItem(timing_item, [
+                                    label,
+                                    os.path.basename(display) if value else display,
+                                    "",
+                                    "Ready" if value else "Missing",
+                                ])
+                                child.setFlags(child.flags() & ~Qt.ItemIsSelectable)
+                                child.setForeground(
+                                    3,
+                                    QColor("#4CAF50") if value else QColor("#F44336"),
+                                )
+                                if value:
+                                    child.setToolTip(1, str(value))
+
+                            outputs_item = QTreeWidgetItem(item, ["Outputs", "", "", ""])
+                            outputs_item.setFlags(outputs_item.flags() & ~Qt.ItemIsSelectable)
+                            outputs_item.setForeground(0, QColor("#64b5f6"))
+
+                            matching_vcds = [
+                                sim for sim in post_impl_vcds
+                                if design_for_artifacts
+                                and design_for_artifacts.lower() in str(sim.get("name", "")).lower()
+                            ] or post_impl_vcds
+
+                            if matching_vcds:
+                                for sim in matching_vcds:
+                                    vcd_child = QTreeWidgetItem(outputs_item, [
+                                        sim.get("name", "VCD"),
+                                        os.path.basename(sim.get("path", "")),
+                                        sim.get("entity", ""),
+                                        "Ready",
+                                    ])
+                                    vcd_child.setFlags(vcd_child.flags() & ~Qt.ItemIsSelectable)
+                                    vcd_child.setForeground(3, QColor("#4CAF50"))
+                                    if sim.get("path"):
+                                        vcd_child.setToolTip(1, str(sim["path"]))
+                            else:
+                                empty_out = QTreeWidgetItem(outputs_item, [
+                                    "No VCD yet",
+                                    "Run post-implementation simulation",
+                                    "",
+                                    "Missing",
+                                ])
+                                empty_out.setFlags(empty_out.flags() & ~Qt.ItemIsSelectable)
+                                empty_out.setForeground(3, QColor("#FFA726"))
+
+                            sources_item.setExpanded(True)
+                            timing_item.setExpanded(True)
+                            outputs_item.setExpanded(True)
+
+                        item.setExpanded(True)
+
+                    logging.info(
+                        f"✅ Found {len(verilog_testbenches)} Verilog testbenches: "
+                        f"{', '.join(verilog_testbenches)}"
+                    )
+                else:
+                    no_vtb = QTreeWidgetItem(verilog_group, [
+                        "No Verilog testbenches found",
+                        "Add .v/.sv under testbench/verilog",
+                        "",
+                        "Missing",
+                    ])
+                    no_vtb.setForeground(0, QColor("#FFA726"))
+                    no_vtb.setForeground(3, QColor("#F44336"))
+
+                verilog_group.setExpanded(True)
+
+                if not available_testbenches and not verilog_testbenches:
                     logging.info("No testbenches found in project")
                     
             except Exception as e:
@@ -5027,28 +5284,40 @@ class MainWindow(QMainWindow):
     
     def _on_testbench_tree_clicked(self, item, column):
         """Handle testbench tree item clicks for selection."""
-        testbench_entity = item.data(0, Qt.UserRole)
-        
-        if testbench_entity and testbench_entity not in ["No testbenches found", "Error loading testbenches"]:
-            # Clear previous highlighting
-            self._clear_testbench_highlighting()
-            
-            # Highlight selected testbench
-            self._highlight_selected_testbench(item)
-            
-            # Update selected testbench label
-            self.selected_testbench_label.setText(f"Selected Testbench: {testbench_entity}")
-            self.selected_testbench_label.setStyleSheet("font-weight: bold; color: #4CAF50; margin-top: 5px;")
-            
-            # Store selected testbench for simulation operations
-            self.selected_testbench = testbench_entity
-            
-            logging.info(f"🎯 Selected testbench: {testbench_entity}")
-        else:
-            # Clear selection if invalid item clicked
-            self.selected_testbench_label.setText("Selected Testbench: None")
-            self.selected_testbench_label.setStyleSheet("font-weight: bold; color: #888888; margin-top: 5px;")
-            self.selected_testbench = None
+        tb_data = item.data(0, Qt.UserRole)
+
+        language = None
+        name = None
+        if isinstance(tb_data, dict):
+            language = tb_data.get("language")
+            name = tb_data.get("name")
+        elif isinstance(tb_data, str) and tb_data not in (
+            "No testbenches found",
+            "Error loading testbenches",
+        ):
+            # Backward-compatible plain string entity name
+            language = "vhdl"
+            name = tb_data
+
+        # Ignore group headers and artifact child rows
+        if not (name and language):
+            return
+
+        self._clear_testbench_highlighting()
+        self._highlight_selected_testbench(item)
+
+        self.selected_testbench = name
+        self.selected_testbench_language = language
+        self.selected_verilog_testbench = name if language == "verilog" else None
+
+        self.selected_testbench_label.setText(
+            f"Selected Testbench: {name} ({language})"
+        )
+        self.selected_testbench_label.setStyleSheet(
+            "font-weight: bold; color: #4CAF50; margin-top: 5px;"
+        )
+
+        logging.info(f"🎯 Selected testbench: {name} [{language}]")
     
     def _highlight_selected_testbench(self, item):
         """Highlight the selected testbench item row."""
@@ -5257,6 +5526,12 @@ class MainWindow(QMainWindow):
                 return
 
             logging.info("🔄 Refreshing synthesis status...")
+
+            # Ensure tree chrome stays expandable
+            self.synthesis_tree.setRootIsDecorated(True)
+            self.synthesis_tree.setItemsExpandable(True)
+            self.synthesis_tree.setExpandsOnDoubleClick(True)
+            self.synthesis_tree.setIndentation(20)
             
             # Update synthesis strategy display
             try:
@@ -5285,7 +5560,10 @@ class MainWindow(QMainWindow):
             
             # Add available entities section
             if available_entities:
-                entities_item = QTreeWidgetItem(["Available Entities", f"{entity_count} found", "", "", "", ""])
+                entities_item = QTreeWidgetItem(
+                    self.synthesis_tree,
+                    ["Available Entities", f"{entity_count} found", "", "", "", ""],
+                )
                 entities_item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
                 entities_item.setForeground(0, QColor("#ffffff"))
                 entities_item.setForeground(1, QColor("#64b5f6"))
@@ -5322,7 +5600,10 @@ class MainWindow(QMainWindow):
                             strategy += " (GateMate)"
                         timestamp = synthesis_results[entity].get('timestamp', '')
                     
-                    entity_item = QTreeWidgetItem([display_name, entity_type, synthesizable_icon, status, strategy, timestamp])
+                    entity_item = QTreeWidgetItem(
+                        entities_item,
+                        [display_name, entity_type, synthesizable_icon, status, strategy, timestamp],
+                    )
                     entity_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
                     entity_item.setForeground(0, QColor("#ffffff"))
                     entity_item.setForeground(1, QColor(type_color))
@@ -5333,29 +5614,27 @@ class MainWindow(QMainWindow):
                     
                     # Store entity metadata (entity name + source file for duplicate disambiguation)
                     entity_item.setData(0, Qt.UserRole, {
+                        "kind": "entity",
                         "entity_name": entity,
                         "source_file": source_file,
                         "unique_key": unique_key,
                         "is_synthesized": is_synthesized,
                     })
-                    
-                    entities_item.addChild(entity_item)
-                
-                self.synthesis_tree.addTopLevelItem(entities_item)
-                entities_item.setExpanded(True)
             
-            # Add synthesized designs section
+            # Add synthesized designs section (grouped output files, like Implementation)
             if synthesized_designs:
-                synth_item = QTreeWidgetItem(["Synthesized Designs", f"{synthesized_count} designs", "", "", "", ""])
+                synth_item = QTreeWidgetItem(
+                    self.synthesis_tree,
+                    ["Synthesized Designs", f"{synthesized_count} designs", "", "", "", ""],
+                )
                 synth_item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
                 synth_item.setForeground(0, QColor("#ffffff"))
                 synth_item.setForeground(1, QColor("#4CAF50"))
                 
                 for design_name, design_info in synthesized_designs.items():
-                    # Show design with file info
-                    file_info = f"{len(design_info.get('files', []))} files"
+                    output_files = list(design_info.get('files', []) or [])
+                    file_info = f"{len(output_files)} files"
                     
-                    # Get strategy for this design
                     design_strategy = ""
                     design_timestamp = design_info.get('timestamp', 'Unknown')
                     
@@ -5363,38 +5642,160 @@ class MainWindow(QMainWindow):
                         design_strategy = synthesis_results[design_name].get('strategy', '').title()
                         if synthesis_results[design_name].get('use_gatemate', False):
                             design_strategy += " (GateMate)"
-                        # Use stored timestamp if available (more accurate than file modification time)
                         stored_timestamp = synthesis_results[design_name].get('timestamp')
                         if stored_timestamp:
                             design_timestamp = stored_timestamp
                     
-                    design_item = QTreeWidgetItem([design_name, "", "", file_info, design_strategy, design_timestamp])
+                    design_item = QTreeWidgetItem(
+                        synth_item,
+                        [
+                            design_name,
+                            "Synthesis",
+                            "✅",
+                            file_info,
+                            design_strategy,
+                            design_timestamp,
+                        ],
+                    )
                     design_item.setIcon(0, self.style().standardIcon(QStyle.SP_ComputerIcon))
                     design_item.setForeground(0, QColor("#ffffff"))
-                    design_item.setForeground(1, QColor("#888888"))  # Empty type column
+                    design_item.setForeground(1, QColor("#4CAF50"))
                     design_item.setForeground(2, QColor("#4CAF50"))
-                    design_item.setForeground(3, QColor("#64b5f6" if design_strategy else "#888888"))
-                    design_item.setForeground(4, QColor("#FFA726"))
-                    
-                    # Add synthesis files as children
-                    for file_path in design_info.get('files', []):
-                        file_name = os.path.basename(file_path)
-                        file_exists = os.path.exists(file_path)
-                        file_status = "✅" if file_exists else "❌"
-                        
-                        file_item = QTreeWidgetItem([file_name, "", file_status, "", ""])
-                        file_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
-                        file_item.setForeground(0, QColor("#ffffff"))
-                        file_item.setForeground(1, QColor("#888888"))  # Empty type column
-                        file_item.setForeground(2, QColor("#4CAF50" if file_exists else "#F44336"))
-                        file_item.setToolTip(0, file_path)
-                        
-                        design_item.addChild(file_item)
-                    
-                    synth_item.addChild(design_item)
-                
-                self.synthesis_tree.addTopLevelItem(synth_item)
-                synth_item.setExpanded(True)
+                    design_item.setForeground(3, QColor("#64b5f6"))
+                    design_item.setForeground(4, QColor("#64b5f6" if design_strategy else "#888888"))
+                    design_item.setForeground(5, QColor("#FFA726"))
+                    design_item.setData(0, Qt.UserRole, {
+                        "kind": "design",
+                        "entity_name": design_name,
+                        "is_synthesized": True,
+                    })
+                    design_item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ShowIndicator
+                        if output_files
+                        else QTreeWidgetItem.DontShowIndicator
+                    )
+
+                    if output_files:
+                        file_groups = {
+                            'Netlist': [],
+                            'VHDL': [],
+                            'Other': [],
+                        }
+                        for file_path in output_files:
+                            file_name = os.path.basename(file_path).lower()
+                            file_ext = os.path.splitext(file_name)[1].lower()
+                            if file_ext in ('.json', '.v', '.blif', '.edif'):
+                                file_groups['Netlist'].append(file_path)
+                            elif file_ext in ('.vhd', '.vhdl'):
+                                file_groups['VHDL'].append(file_path)
+                            else:
+                                file_groups['Other'].append(file_path)
+
+                        for group_name, group_files in file_groups.items():
+                            if not group_files:
+                                continue
+                            group_item = QTreeWidgetItem(
+                                design_item,
+                                [
+                                    group_name,
+                                    "Group",
+                                    "",
+                                    f"{len(group_files)} file(s)",
+                                    "",
+                                    "",
+                                ],
+                            )
+                            group_item.setIcon(
+                                0, self.style().standardIcon(QStyle.SP_DirIcon)
+                            )
+                            group_item.setForeground(0, QColor("#CE93D8"))
+                            group_item.setForeground(1, QColor("#9C27B0"))
+                            group_item.setForeground(3, QColor("#888888"))
+                            group_item.setFlags(Qt.ItemIsEnabled)
+                            group_item.setData(0, Qt.UserRole, {
+                                "kind": "group",
+                                "entity_name": design_name,
+                                "group": group_name,
+                            })
+                            group_item.setChildIndicatorPolicy(
+                                QTreeWidgetItem.ShowIndicator
+                            )
+
+                            for file_path in sorted(group_files):
+                                file_name = os.path.basename(file_path)
+                                try:
+                                    file_stat = os.stat(file_path)
+                                    file_size = file_stat.st_size
+                                    if file_size < 1024:
+                                        size_str = f"{file_size}B"
+                                    elif file_size < 1024 * 1024:
+                                        size_str = f"{file_size/1024:.1f}KB"
+                                    else:
+                                        size_str = f"{file_size/(1024*1024):.1f}MB"
+                                    file_time = time.strftime(
+                                        '%Y-%m-%d %H:%M:%S',
+                                        time.localtime(file_stat.st_mtime),
+                                    )
+                                except OSError:
+                                    size_str = "Unknown"
+                                    file_time = "Unknown"
+
+                                lower_name = file_name.lower()
+                                file_ext = os.path.splitext(lower_name)[1]
+                                if lower_name.endswith('_synth.json'):
+                                    file_type = "GateMate JSON"
+                                    file_icon = QStyle.SP_FileDialogDetailedView
+                                elif lower_name.endswith('_synth.v'):
+                                    file_type = "Verilog netlist"
+                                    file_icon = QStyle.SP_FileIcon
+                                elif '_synth_vhdl' in lower_name or file_ext in ('.vhd', '.vhdl'):
+                                    file_type = "VHDL netlist"
+                                    file_icon = QStyle.SP_FileIcon
+                                elif file_ext == '.json':
+                                    file_type = "JSON"
+                                    file_icon = QStyle.SP_FileDialogListView
+                                elif file_ext == '.v':
+                                    file_type = "Verilog"
+                                    file_icon = QStyle.SP_FileIcon
+                                else:
+                                    file_type = "File"
+                                    file_icon = QStyle.SP_FileIcon
+
+                                file_item = QTreeWidgetItem(
+                                    group_item,
+                                    [
+                                        file_name,
+                                        file_type,
+                                        "✅",
+                                        size_str,
+                                        "",
+                                        file_time,
+                                    ],
+                                )
+                                file_item.setIcon(
+                                    0, self.style().standardIcon(file_icon)
+                                )
+                                file_item.setToolTip(0, file_path)
+                                file_item.setForeground(0, QColor("#ffffff"))
+                                file_item.setForeground(1, QColor("#64b5f6"))
+                                file_item.setForeground(2, QColor("#4CAF50"))
+                                file_item.setForeground(3, QColor("#64b5f6"))
+                                file_item.setForeground(5, QColor("#FFA726"))
+                                file_item.setData(0, Qt.UserRole, {
+                                    "kind": "file",
+                                    "entity_name": design_name,
+                                    "path": file_path,
+                                })
+
+                        logging.info(
+                            "Synthesis tree: %s -> %d files in %d groups",
+                            design_name,
+                            len(output_files),
+                            design_item.childCount(),
+                        )
+
+            # Expand after children are attached
+            self.synthesis_tree.expandToDepth(2)
             
             # Update statistics
             # Count only synthesizable entities (Source and Top, not Testbench)
@@ -5499,21 +5900,44 @@ class MainWindow(QMainWindow):
                     design_name = file_name[:-11]  # Remove '_synth.json'
                     if design_name not in synthesized_designs:
                         synthesized_designs[design_name] = {'files': [], 'timestamp': None}
+
+                    output_files = synthesized_designs[design_name]['files']
+
+                    def _add(path):
+                        if path and os.path.isfile(path) and path not in output_files:
+                            output_files.append(path)
+
+                    # Canonical companions + any other design-prefixed synth artifacts
+                    known = (
+                        f"{design_name}_synth.json",
+                        f"{design_name}_synth.v",
+                        f"{design_name}_synth_vhdl.vhd",
+                        f"{design_name}.json",
+                        f"{design_name}.v",
+                    )
+                    for name in known:
+                        _add(os.path.join(synth_dir, name))
+
+                    try:
+                        for name in os.listdir(synth_dir):
+                            lower = name.lower()
+                            if not (
+                                name.startswith(f"{design_name}_synth")
+                                or name in known
+                            ):
+                                continue
+                            if lower.endswith(('.json', '.v', '.vhd', '.vhdl', '.blif', '.edif', '.log', '.txt')):
+                                _add(os.path.join(synth_dir, name))
+                    except OSError:
+                        pass
                     
-                    file_path = os.path.join(synth_dir, file_name)
-                    synthesized_designs[design_name]['files'].append(file_path)
-                    
-                    # Also note companion Verilog if present
-                    v_path = os.path.join(synth_dir, f"{design_name}_synth.v")
-                    if os.path.exists(v_path):
-                        synthesized_designs[design_name]['files'].append(v_path)
-                    
-                    if synthesized_designs[design_name]['timestamp'] is None:
+                    if synthesized_designs[design_name]['timestamp'] is None and output_files:
                         try:
-                            import time
-                            mtime = os.path.getmtime(file_path)
-                            synthesized_designs[design_name]['timestamp'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mtime))
-                        except Exception:
+                            mtime = max(os.path.getmtime(p) for p in output_files)
+                            synthesized_designs[design_name]['timestamp'] = time.strftime(
+                                '%Y-%m-%d %H:%M:%S', time.localtime(mtime)
+                            )
+                        except OSError:
                             synthesized_designs[design_name]['timestamp'] = "Unknown"
                 
                 return synthesized_designs
@@ -6314,6 +6738,95 @@ class MainWindow(QMainWindow):
             self.run_in_thread(add_files, success_msg=success_msg)
         else:
             logging.info("❌ User cancelled VHDL file selection")
+
+    def add_verilog_testbench(self):
+        """Add Verilog/SystemVerilog testbench files for post-implementation simulation."""
+        logging.info("📁 Opening Verilog testbench file selection dialog...")
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Verilog Testbench Files",
+            "",
+            "Verilog Files (*.v *.sv);;All Files (*)",
+        )
+
+        if not file_paths:
+            logging.info("❌ User cancelled Verilog testbench selection")
+            return
+
+        logging.info(f"📄 User selected {len(file_paths)} Verilog TB file(s): {file_paths}")
+
+        def add_files():
+            try:
+                from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
+
+                project_config_path, project_dir = self.find_project_config()
+                if not project_config_path:
+                    raise Exception(
+                        "No project configuration found. Please create a project first "
+                        "or navigate to a project directory."
+                    )
+
+                original_cwd = os.getcwd()
+                os.chdir(project_dir)
+                try:
+                    hierarchy = HierarchyManager()
+                    if not hierarchy.config_path or not hierarchy.config:
+                        raise Exception("Failed to load project configuration.")
+
+                    hierarchy.ensure_post_impl_project_structure()
+
+                    added_files = []
+                    failed_files = []
+                    for file_path in file_paths:
+                        try:
+                            if not os.path.exists(file_path):
+                                raise FileNotFoundError(
+                                    f"Source file does not exist: {file_path}"
+                                )
+                            result_path = hierarchy.add_file(
+                                file_path, "testbench_verilog", copy_to_project=True
+                            )
+                            if os.path.exists(result_path):
+                                added_files.append(os.path.basename(result_path))
+                            else:
+                                failed_files.append(
+                                    f"{os.path.basename(file_path)} (copy failed)"
+                                )
+                        except Exception as e:
+                            logging.error(f"❌ Failed to add Verilog TB {file_path}: {e}")
+                            failed_files.append(f"{os.path.basename(file_path)} ({e})")
+
+                    self._pending_project_refresh = True
+                    QTimer.singleShot(500, self.refresh_simulation_status)
+
+                    result_parts = []
+                    if added_files:
+                        result_parts.append(
+                            f"Successfully added {len(added_files)} Verilog TB(s): "
+                            f"{', '.join(added_files)}"
+                        )
+                    if failed_files:
+                        result_parts.append(
+                            f"Failed to add {len(failed_files)} file(s): "
+                            f"{', '.join(failed_files)}"
+                        )
+                    if not added_files and failed_files:
+                        raise Exception(
+                            f"Failed to add any Verilog testbenches. "
+                            f"Errors: {'; '.join(failed_files)}"
+                        )
+                    return ". ".join(result_parts)
+                finally:
+                    os.chdir(original_cwd)
+            except Exception as e:
+                logging.error(f"Error adding Verilog testbenches: {e}")
+                raise Exception(f"Failed to add Verilog testbenches: {e}")
+
+        file_count = len(file_paths)
+        success_msg = (
+            f"Verilog testbench{'es' if file_count > 1 else ''} added successfully"
+        )
+        self.run_in_thread(add_files, success_msg=success_msg)
     
     def remove_vhdl_file(self):
         """Remove selected VHDL file from project configuration (does not delete the source file)."""
@@ -7174,7 +7687,7 @@ class MainWindow(QMainWindow):
         
         selected_item = selected_items[0]
         
-        # Check if it's an entity (not a parent category)
+        # Check if it's an entity (not a parent category / file group)
         if not selected_item.parent():
             logging.warning("Please select a specific entity, not a category")
             self.show_message("Invalid Selection", 
@@ -7183,8 +7696,19 @@ class MainWindow(QMainWindow):
             return
         
         entity_meta = selected_item.data(0, Qt.UserRole) or {}
+        if entity_meta.get("kind") == "group":
+            self.show_message(
+                "Invalid Selection",
+                "Please select an entity under Available Entities (or a synthesized design), not a file group.",
+                "warning",
+            )
+            return
+
         entity_name = entity_meta.get("entity_name") or selected_item.text(0).split(" (")[0]
         source_file = entity_meta.get("source_file")
+        # File rows under Synthesized Designs carry entity_name but not source_file
+        if entity_meta.get("kind") == "file" and not source_file:
+            entity_name = entity_meta.get("entity_name") or entity_name
         logging.info(f"🔄 Opening synthesis dialog for entity: {entity_name}")
         if source_file:
             logging.info(f"📄 Selected source file: {source_file}")
@@ -8283,9 +8807,9 @@ class MainWindow(QMainWindow):
                     logging.info("🔄 POST-IMPLEMENTATION NETLIST GENERATION STARTED")
                     logging.info("=" * 70)
                     logging.info(f"📁 Design: {design_name}")
-                    logging.info(f"📄 Format: VHDL")
+                    logging.info(f"📄 Format: Verilog")
                     
-                    success = pnr.generate_post_impl_netlist(design_name, netlist_format="vhdl")
+                    success = pnr.generate_post_impl_netlist(design_name, netlist_format="verilog")
                     
                     if success:
                         logging.info("✅ Post-implementation netlist generation completed successfully")
@@ -9152,7 +9676,115 @@ class MainWindow(QMainWindow):
         
         self.run_in_thread(post_sim_operation, success_msg="Post-synthesis simulation completed successfully")
     
+    def post_implementation_simulation(self):
+        """Run post-implementation timing simulation with Icarus + Verilog TB + SDF."""
+        logging.info("⏱️ Opening post-implementation simulation configuration...")
 
+        dialog = SimulationRunDialog(self, simulation_type="post-implementation")
+        if dialog.exec_() != QDialog.Accepted:
+            logging.info("Post-implementation simulation cancelled by user")
+            return
+
+        settings = dialog.get_simulation_settings()
+        simulation_time = settings['simulation_time']
+        time_prefix = settings['time_prefix']
+        save_settings = settings['save_settings']
+
+        logging.info(
+            f"🎯 Running post-implementation simulation with {simulation_time}{time_prefix}"
+        )
+
+        def post_impl_sim_operation():
+            try:
+                from cc_project_manager_pkg.simulation_manager import SimulationManager
+                from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
+                from cc_project_manager_pkg.hierarchy_manager import HierarchyManager
+
+                sim_manager = SimulationManager()
+
+                if save_settings:
+                    try:
+                        sim_manager.set_simulation_length(simulation_time, time_prefix)
+                        logging.info(
+                            f"✅ Saved simulation settings: {simulation_time}{time_prefix}"
+                        )
+                    except Exception as e:
+                        logging.warning(f"Failed to save simulation settings: {e}")
+
+                testbench_module = getattr(self, "selected_verilog_testbench", None)
+                if not testbench_module:
+                    if (
+                        getattr(self, "selected_testbench_language", None) == "verilog"
+                        and getattr(self, "selected_testbench", None)
+                    ):
+                        testbench_module = self.selected_testbench
+
+                if not testbench_module:
+                    logging.error(
+                        "❌ No Verilog testbench selected for post-implementation simulation"
+                    )
+                    return (
+                        "Select a Verilog (Post-Implementation) testbench first, "
+                        "or add one with Add Verilog Testbench"
+                    )
+
+                hierarchy = HierarchyManager()
+                testbench_file = hierarchy.get_verilog_testbench_file(testbench_module)
+
+                pnr = NextPnRCommands()
+                placed_designs = pnr.get_available_placed_designs() or []
+                design_name = None
+                if (
+                    getattr(self, "selected_design", None)
+                    and self.selected_design in placed_designs
+                ):
+                    design_name = self.selected_design
+                elif placed_designs:
+                    design_name = placed_designs[0]
+
+                if not design_name:
+                    logging.error("❌ No placed design available for post-implementation simulation")
+                    return (
+                        "No placed and routed design found. "
+                        "Run place and route before post-implementation simulation."
+                    )
+
+                logging.info(
+                    f"🎯 Post-impl sim design={design_name}, "
+                    f"testbench={testbench_module}, file={testbench_file}"
+                )
+
+                success = sim_manager.post_implementation_simulate(
+                    design_name,
+                    testbench_module=testbench_module,
+                    testbench_file=testbench_file,
+                    simulation_time=simulation_time,
+                    time_prefix=time_prefix,
+                    apply_sdf=True,
+                )
+
+                if success:
+                    logging.info(
+                        f"✅ Post-implementation simulation completed for {design_name}!"
+                    )
+                    QTimer.singleShot(1000, self.refresh_simulation_status)
+                    return (
+                        f"Post-implementation simulation completed successfully for "
+                        f"{design_name} / {testbench_module} "
+                        f"({simulation_time}{time_prefix})"
+                    )
+
+                logging.error("❌ Post-implementation simulation failed")
+                return "Post-implementation simulation failed - check logs for details"
+
+            except Exception as e:
+                logging.error(f"❌ Post-implementation simulation error: {e}")
+                return f"Post-implementation simulation error: {e}"
+
+        self.run_in_thread(
+            post_impl_sim_operation,
+            success_msg="Post-implementation simulation completed successfully",
+        )
 
     
     def launch_waveform_viewer(self):
@@ -9168,9 +9800,24 @@ class MainWindow(QMainWindow):
                 if not sim_manager.check_gtkwave():
                     logging.error("❌ GTKWave is not available")
                     return "GTKWave is not available - please configure GTKWave path in Configuration tab"
+
+                # Prefer a VCD selected in the Simulation Status tree
+                vcd_path = None
+                if hasattr(self, "simulation_tree") and self.simulation_tree is not None:
+                    selected = self.simulation_tree.selectedItems()
+                    if selected:
+                        sim_data = selected[0].data(0, Qt.UserRole) or {}
+                        if isinstance(sim_data, dict) and sim_data.get("path"):
+                            candidate = sim_data["path"]
+                            if os.path.isfile(candidate):
+                                vcd_path = candidate
+                                logging.info(
+                                    "Using selected simulation VCD: %s",
+                                    os.path.basename(vcd_path),
+                                )
                 
-                # Launch GTKWave with latest simulation
-                success = sim_manager.launch_wave()
+                # Launch GTKWave with selected VCD, else latest across all sim types
+                success = sim_manager.launch_wave(vcd_path)
                 
                 if success:
                     logging.info("✅ GTKWave launched successfully")
@@ -11343,36 +11990,58 @@ Simulation Options:
         info_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(info_frame)
         
-        # Implementation tree
+        # Implementation tree — expandable so each design shows output groups/files
         self.implementation_tree = QTreeWidget()
-        self.implementation_tree.setHeaderLabels(["Design / File", "Type", "Status", "Constraint File", "Size", "Modified"])
+        self.implementation_tree.setHeaderLabels(
+            ["Design / File", "Type", "Status", "Constraint File", "Size", "Modified"]
+        )
         
-        # Configure tree widget for better display
-        self.implementation_tree.setRootIsDecorated(False)
+        self.implementation_tree.setRootIsDecorated(True)
         self.implementation_tree.setAlternatingRowColors(False)
         self.implementation_tree.setUniformRowHeights(True)
-        self.implementation_tree.setIndentation(15)
+        self.implementation_tree.setIndentation(20)
+        self.implementation_tree.setAnimated(True)
         
-        # Enable single selection
         self.implementation_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.implementation_tree.setFocusPolicy(Qt.StrongFocus)
-        
-        # Remove visual indicators
-        self.implementation_tree.setItemsExpandable(False)
-        self.implementation_tree.setExpandsOnDoubleClick(False)
-        self.implementation_tree.setStyleSheet("")
+        self.implementation_tree.setItemsExpandable(True)
+        self.implementation_tree.setExpandsOnDoubleClick(True)
+        # Dark theme: default branch arrows are often invisible (dark-on-dark).
+        # Use high-contrast markers so expandable rows are obvious.
+        self.implementation_tree.setStyleSheet("""
+            QTreeWidget::branch:has-children:!has-siblings:closed,
+            QTreeWidget::branch:closed:has-children:has-siblings {
+                border: 1px solid #90CAF9;
+                background: #37474F;
+                margin: 2px;
+            }
+            QTreeWidget::branch:open:has-children:!has-siblings,
+            QTreeWidget::branch:open:has-children:has-siblings {
+                border: 1px solid #81C784;
+                background: #2E7D32;
+                margin: 2px;
+            }
+            QTreeWidget::branch:has-siblings:!adjoins-item {
+                border-image: none;
+                border: none;
+            }
+            QTreeWidget::branch:!has-children:!has-siblings:adjoins-item,
+            QTreeWidget::branch:!has-children:has-siblings:adjoins-item {
+                border-image: none;
+                border: none;
+            }
+        """)
         
         # Set column widths
-        self.implementation_tree.setColumnWidth(0, 200)  # Design/File
-        self.implementation_tree.setColumnWidth(1, 100)  # Type
-        self.implementation_tree.setColumnWidth(2, 100)  # Status
-        self.implementation_tree.setColumnWidth(3, 80)   # Size
+        self.implementation_tree.setColumnWidth(0, 220)  # Design/File
+        self.implementation_tree.setColumnWidth(1, 110)  # Type
+        self.implementation_tree.setColumnWidth(2, 120)  # Status
+        self.implementation_tree.setColumnWidth(3, 120)  # Constraint
+        self.implementation_tree.setColumnWidth(4, 80)   # Size
+        self.implementation_tree.setColumnWidth(5, 150)  # Modified
         
         # Connect click handler for design selection
         self.implementation_tree.itemClicked.connect(self._on_implementation_tree_clicked)
-        
-        # Enable single selection mode for better highlighting support
-        self.implementation_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         
         layout.addWidget(self.implementation_tree)
         
@@ -11416,6 +12085,12 @@ Simulation Options:
                 return
 
             logging.info("🔄 Refreshing implementation status...")
+
+            # Ensure tree chrome stays expandable (create_ui + every refresh)
+            self.implementation_tree.setRootIsDecorated(True)
+            self.implementation_tree.setItemsExpandable(True)
+            self.implementation_tree.setExpandsOnDoubleClick(True)
+            self.implementation_tree.setIndentation(20)
             
             # Store current selection before clearing
             current_selection = getattr(self, 'selected_design', None)
@@ -11512,13 +12187,18 @@ Simulation Options:
             
             # Add implementation outputs section
             if implementation_outputs:
-                impl_item = QTreeWidgetItem(["Implementation Outputs", f"{implemented_count} designs", "", "", ""])
+                impl_item = QTreeWidgetItem(
+                    self.implementation_tree,
+                    ["Implementation Outputs", f"{implemented_count} designs", "", "", "", ""],
+                )
                 impl_item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
                 impl_item.setForeground(0, QColor("#ffffff"))
                 impl_item.setForeground(1, QColor("#4CAF50"))
+                impl_item.setFlags(
+                    Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDropEnabled
+                )
                 
                 for design_name, outputs in implementation_outputs.items():
-                    # Show implementation status
                     status_parts = []
                     if outputs.get('placed', False):
                         status_parts.append("P&R")
@@ -11530,125 +12210,190 @@ Simulation Options:
                         status_parts.append("Netlist")
                     
                     status = " + ".join(status_parts) if status_parts else "Pending"
-                    
-                    # Get file count
-                    file_count = len(outputs.get('files', []))
-                    file_info = f"{file_count} files"
-                    
-                    # Get latest timestamp
+                    output_files = list(outputs.get('files', []) or [])
+                    file_info = f"{len(output_files)} files"
                     timestamp = outputs.get('timestamp', 'Unknown')
-                    
-                    # Get constraint file
                     constraint_file = outputs.get('constraint_file', 'Unknown')
                     
-                    output_item = QTreeWidgetItem([design_name, "Implementation", status, constraint_file, file_info, timestamp])
+                    # Create design row already parented under Implementation Outputs
+                    output_item = QTreeWidgetItem(
+                        impl_item,
+                        [
+                            design_name,
+                            "Implementation",
+                            status,
+                            str(constraint_file),
+                            file_info,
+                            timestamp,
+                        ],
+                    )
                     output_item.setIcon(0, self.style().standardIcon(QStyle.SP_ComputerIcon))
                     output_item.setForeground(0, QColor("#ffffff"))
                     output_item.setForeground(1, QColor("#4CAF50"))
                     output_item.setForeground(2, QColor("#64b5f6"))
-                    output_item.setForeground(3, QColor("#FF9800"))  # Constraint file - orange
+                    output_item.setForeground(3, QColor("#FF9800"))
                     output_item.setForeground(4, QColor("#64b5f6"))
                     output_item.setForeground(5, QColor("#FFA726"))
-                    
-                    # Add individual output files as children
-                    output_files = outputs.get('files', [])
+                    output_item.setData(0, Qt.UserRole, {
+                        "kind": "design",
+                        "design": design_name,
+                    })
+                    output_item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ShowIndicator
+                        if output_files
+                        else QTreeWidgetItem.DontShowIndicator
+                    )
+
                     if output_files:
-                        # Group files by type for better organization
                         file_groups = {
                             'Implementation': [],
                             'Bitstream': [],
                             'Timing': [],
+                            'Graphics': [],
                             'Netlist': [],
-                            'Other': []
+                            'Other': [],
                         }
-                        
+
                         for file_path in output_files:
-                            file_name = os.path.basename(file_path)
+                            file_name = os.path.basename(file_path).lower()
                             file_ext = os.path.splitext(file_name)[1].lower()
-                            
-                            # Categorize files by type
-                            if file_name.endswith('.cfg'):
+
+                            if file_name.endswith('_impl.txt') or file_name.endswith('.cfg'):
                                 file_groups['Implementation'].append(file_path)
-                            elif file_ext in ['.bit']:
+                            elif file_ext == '.bit':
                                 file_groups['Bitstream'].append(file_path)
-                            elif file_ext in ['.sdf', '.rpt'] or 'timing' in file_name.lower():
-                                file_groups['Timing'].append(file_path)
-                            elif file_ext in ['.v', '.vhd', '.json', '.blif']:
+                            elif (
+                                file_ext in ('.sdf', '.rpt')
+                                or file_name.endswith('_report.json')
+                                or 'timing' in file_name
+                                or file_ext == '.json'
+                            ):
+                                # report JSON / seed reports live under Timing;
+                                # P&R sim JSON handled below
+                                if '_pnr' in file_name and file_ext == '.json':
+                                    file_groups['Netlist'].append(file_path)
+                                else:
+                                    file_groups['Timing'].append(file_path)
+                            elif file_ext == '.svg':
+                                file_groups['Graphics'].append(file_path)
+                            elif file_ext in ('.v', '.vhd', '.vhdl', '.blif'):
                                 file_groups['Netlist'].append(file_path)
                             else:
                                 file_groups['Other'].append(file_path)
-                        
-                        # Add file groups as children
+
                         for group_name, group_files in file_groups.items():
-                            if group_files:
-                                # Create group header
-                                group_item = QTreeWidgetItem([f"{group_name} Files", f"{len(group_files)} files", "", "", "", ""])
-                                group_item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
-                                group_item.setForeground(0, QColor("#ffffff"))
-                                group_item.setForeground(1, QColor("#9C27B0"))
-                                
-                                # Add individual files
-                                for file_path in sorted(group_files):
-                                    file_name = os.path.basename(file_path)
-                                    
-                                    # Get file info
-                                    try:
-                                        file_stat = os.stat(file_path)
-                                        file_size = file_stat.st_size
-                                        if file_size < 1024:
-                                            size_str = f"{file_size}B"
-                                        elif file_size < 1024 * 1024:
-                                            size_str = f"{file_size/1024:.1f}KB"
-                                        else:
-                                            size_str = f"{file_size/(1024*1024):.1f}MB"
-                                        
-                                        file_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_stat.st_mtime))
-                                    except:
-                                        size_str = "Unknown"
-                                        file_time = "Unknown"
-                                    
-                                    # Determine file type and icon
-                                    file_ext = os.path.splitext(file_name)[1].lower()
-                                    if file_ext == '.cfg':
-                                        file_type = "Config"
-                                        file_icon = QStyle.SP_FileDialogDetailedView
-                                    elif file_ext == '.bit':
-                                        file_type = "Bitstream"
-                                        file_icon = QStyle.SP_DriveHDIcon
-                                    elif file_ext in ['.sdf', '.rpt']:
-                                        file_type = "Timing"
-                                        file_icon = QStyle.SP_FileDialogListView
-                                    elif file_ext in ['.v', '.vhd']:
-                                        file_type = "Netlist"
-                                        file_icon = QStyle.SP_FileIcon
-                                    elif file_ext in ['.json', '.blif']:
-                                        file_type = "Netlist"
-                                        file_icon = QStyle.SP_FileIcon
+                            if not group_files:
+                                continue
+                            group_item = QTreeWidgetItem(
+                                output_item,
+                                [
+                                    group_name,
+                                    "Group",
+                                    f"{len(group_files)} file(s)",
+                                    "",
+                                    "",
+                                    "",
+                                ],
+                            )
+                            group_item.setIcon(
+                                0, self.style().standardIcon(QStyle.SP_DirIcon)
+                            )
+                            group_item.setForeground(0, QColor("#CE93D8"))
+                            group_item.setForeground(1, QColor("#9C27B0"))
+                            group_item.setForeground(2, QColor("#888888"))
+                            group_item.setFlags(Qt.ItemIsEnabled)
+                            group_item.setData(0, Qt.UserRole, {
+                                "kind": "group",
+                                "design": design_name,
+                                "group": group_name,
+                            })
+                            group_item.setChildIndicatorPolicy(
+                                QTreeWidgetItem.ShowIndicator
+                            )
+
+                            for file_path in sorted(group_files):
+                                file_name = os.path.basename(file_path)
+                                try:
+                                    file_stat = os.stat(file_path)
+                                    file_size = file_stat.st_size
+                                    if file_size < 1024:
+                                        size_str = f"{file_size}B"
+                                    elif file_size < 1024 * 1024:
+                                        size_str = f"{file_size/1024:.1f}KB"
                                     else:
-                                        file_type = "File"
-                                        file_icon = QStyle.SP_FileIcon
-                                    
-                                    file_item = QTreeWidgetItem([file_name, file_type, "✅ Available", "", size_str, file_time])
-                                    file_item.setIcon(0, self.style().standardIcon(file_icon))
-                                    file_item.setForeground(0, QColor("#ffffff"))
-                                    file_item.setForeground(1, QColor("#64b5f6"))
-                                    file_item.setForeground(2, QColor("#4CAF50"))
-                                    file_item.setForeground(3, QColor("#888888"))  # Empty constraint file column
-                                    file_item.setForeground(4, QColor("#64b5f6"))
-                                    file_item.setForeground(5, QColor("#FFA726"))
-                                    
-                                    # Store file path for potential future use
-                                    file_item.setData(0, Qt.UserRole, file_path)
-                                    
-                                    group_item.addChild(file_item)
-                                
-                                output_item.addChild(group_item)
-                                group_item.setExpanded(True)
-                    
-                    impl_item.addChild(output_item)
-                
-                self.implementation_tree.addTopLevelItem(impl_item)
-                impl_item.setExpanded(True)
+                                        size_str = f"{file_size/(1024*1024):.1f}MB"
+                                    file_time = time.strftime(
+                                        '%Y-%m-%d %H:%M:%S',
+                                        time.localtime(file_stat.st_mtime),
+                                    )
+                                except OSError:
+                                    size_str = "Unknown"
+                                    file_time = "Unknown"
+
+                                file_ext = os.path.splitext(file_name)[1].lower()
+                                lower_name = file_name.lower()
+                                if lower_name.endswith('_impl.txt') or file_ext == '.cfg':
+                                    file_type = "Impl"
+                                    file_icon = QStyle.SP_FileDialogDetailedView
+                                elif file_ext == '.bit':
+                                    file_type = "Bitstream"
+                                    file_icon = QStyle.SP_DriveHDIcon
+                                elif file_ext == '.sdf':
+                                    file_type = "SDF"
+                                    file_icon = QStyle.SP_FileDialogListView
+                                elif lower_name.endswith('_report.json') or file_ext == '.rpt':
+                                    file_type = "Report"
+                                    file_icon = QStyle.SP_FileDialogListView
+                                elif file_ext == '.svg':
+                                    file_type = "SVG"
+                                    file_icon = QStyle.SP_FileDialogContentsView
+                                elif lower_name.endswith('_pnr.v') or file_ext in ('.v', '.vhd'):
+                                    file_type = "Sim netlist"
+                                    file_icon = QStyle.SP_FileIcon
+                                elif '_pnr.json' in lower_name:
+                                    file_type = "P&R JSON"
+                                    file_icon = QStyle.SP_FileIcon
+                                else:
+                                    file_type = "File"
+                                    file_icon = QStyle.SP_FileIcon
+
+                                file_item = QTreeWidgetItem(
+                                    group_item,
+                                    [
+                                        file_name,
+                                        file_type,
+                                        "Available",
+                                        "",
+                                        size_str,
+                                        file_time,
+                                    ],
+                                )
+                                file_item.setIcon(
+                                    0, self.style().standardIcon(file_icon)
+                                )
+                                file_item.setToolTip(0, file_path)
+                                file_item.setForeground(0, QColor("#ffffff"))
+                                file_item.setForeground(1, QColor("#64b5f6"))
+                                file_item.setForeground(2, QColor("#4CAF50"))
+                                file_item.setForeground(4, QColor("#64b5f6"))
+                                file_item.setForeground(5, QColor("#FFA726"))
+                                file_item.setData(0, Qt.UserRole, {
+                                    "kind": "file",
+                                    "design": design_name,
+                                    "path": file_path,
+                                })
+
+                        logging.info(
+                            "Implementation tree: %s -> %d files in %d groups",
+                            design_name,
+                            len(output_files),
+                            output_item.childCount(),
+                        )
+
+            # Expand after all children are attached (setExpanded before
+            # parenting is unreliable and leaves designs looking flat).
+            # Depth 2: section → design → groups (files stay one click away).
+            self.implementation_tree.expandToDepth(2)
             
             # Update statistics
             self.impl_stats_labels['synthesized_designs'].setText(str(synthesized_count))
@@ -11781,83 +12526,100 @@ Simulation Options:
             placed_designs = pnr.get_available_placed_designs()
             
             for design_name in placed_designs:
-                # Get implementation status for this design
                 status = pnr.get_implementation_status(design_name)
-                
-                # Collect all output files for this design
+                artifacts = pnr.get_analysis_artifacts(design_name)
                 output_files = []
-                
-                # Implementation files (nextpnr *_impl.txt + legacy p_r *.cfg)
-                impl_patterns = [
-                    os.path.join(pnr.work_dir, f"{design_name}_impl.txt"),
+
+                def _add(path):
+                    if path and os.path.isfile(path) and path not in output_files:
+                        output_files.append(path)
+
+                # Canonical / known nextpnr + gmpack outputs
+                _add(artifacts.get("impl_txt"))
+                _add(os.path.join(pnr.work_dir, f"{design_name}_impl.txt"))
+                _add(os.path.join(pnr.bitstream_dir, f"{design_name}.bit"))
+                _add(artifacts.get("report_json"))
+                _add(os.path.join(pnr.timing_dir, f"{design_name}_report.json"))
+                _add(os.path.join(pnr.timing_dir, f"{design_name}.sdf"))
+                _add(artifacts.get("placed_svg"))
+                _add(artifacts.get("routed_svg"))
+                _add(os.path.join(pnr.netlist_dir, f"{design_name}_pnr.json"))
+                _add(os.path.join(pnr.netlist_dir, f"{design_name}_pnr.v"))
+
+                for sdf in artifacts.get("sdf_files") or []:
+                    _add(sdf)
+                for report in artifacts.get("seed_reports") or []:
+                    _add(report)
+
+                # Scan timing / netlist / build for related seed artifacts
+                scan_specs = [
+                    (pnr.timing_dir, (
+                        f"{design_name}_seed_",
+                        f"{design_name}_report",
+                        f"{design_name}.sdf",
+                        f"{design_name}_placed",
+                        f"{design_name}_routed",
+                    )),
+                    (pnr.netlist_dir, (
+                        f"{design_name}_",
+                        f"{design_name}.",
+                    )),
+                    (pnr.work_dir, (
+                        f"{design_name}_impl",
+                    )),
+                    (pnr.bitstream_dir, (
+                        f"{design_name}.bit",
+                        f"{design_name}_",
+                    )),
+                ]
+                for directory, prefixes in scan_specs:
+                    if not directory or not os.path.isdir(directory):
+                        continue
+                    try:
+                        for name in os.listdir(directory):
+                            if not any(name.startswith(p) or name == p for p in prefixes):
+                                continue
+                            path = os.path.join(directory, name)
+                            if os.path.isfile(path):
+                                _add(path)
+                    except OSError:
+                        continue
+
+                # Legacy p_r leftovers if present
+                for legacy in (
                     os.path.join(pnr.work_dir, f"{design_name}_impl.cfg"),
                     os.path.join(pnr.work_dir, f"{design_name}_impl_00.cfg"),
-                ]
-                
-                for impl_file in impl_patterns:
-                    if os.path.exists(impl_file):
-                        output_files.append(impl_file)
-                
-                # Bitstream files (gmpack + legacy patterns)
-                bitstream_patterns = [
-                    os.path.join(pnr.bitstream_dir, f"{design_name}.bit"),
                     os.path.join(pnr.bitstream_dir, f"{design_name}_impl_00.cfg.bit"),
-                ]
-                
-                for bitstream_file in bitstream_patterns:
-                    if os.path.exists(bitstream_file):
-                        output_files.append(bitstream_file)
-                
-                # Timing / report files (nextpnr --report / --sdf + legacy)
-                timing_patterns = [
-                    os.path.join(pnr.timing_dir, f"{design_name}_report.json"),
-                    os.path.join(pnr.timing_dir, f"{design_name}_timing.rpt"),
-                    os.path.join(pnr.timing_dir, f"{design_name}.sdf"),
-                    os.path.join(pnr.timing_dir, f"{design_name}_impl_00.sdf"),
-                ]
-                
-                for timing_file in timing_patterns:
-                    if os.path.exists(timing_file):
-                        output_files.append(timing_file)
-                
-                # Post-implementation netlists (optional / legacy)
-                netlist_formats = getattr(pnr, "NETLIST_FORMATS", {
-                    "vhdl": ".vhd",
-                    "verilog": ".v",
-                    "json": ".json",
-                    "blif": ".blif",
-                })
-                for fmt, ext in netlist_formats.items():
-                    netlist_patterns = [
-                        os.path.join(pnr.netlist_dir, f"{design_name}{ext}"),
-                        os.path.join(pnr.netlist_dir, f"{design_name}_impl{ext}"),
-                        os.path.join(pnr.netlist_dir, f"{design_name}_impl_00{ext}"),
-                    ]
-                    
-                    for netlist_file in netlist_patterns:
-                        if os.path.exists(netlist_file):
-                            output_files.append(netlist_file)
-                
-                # Get the most recent timestamp from output files
+                ):
+                    _add(legacy)
+
                 latest_timestamp = "Unknown"
                 if output_files:
                     try:
-                        timestamps = []
-                        for file_path in output_files:
-                            if os.path.exists(file_path):
-                                timestamps.append(os.path.getmtime(file_path))
-                        
+                        timestamps = [
+                            os.path.getmtime(p) for p in output_files if os.path.exists(p)
+                        ]
                         if timestamps:
-                            latest_time = max(timestamps)
-                            latest_timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(latest_time))
-                    except:
+                            latest_timestamp = time.strftime(
+                                '%Y-%m-%d %H:%M:%S',
+                                time.localtime(max(timestamps)),
+                            )
+                    except OSError:
                         pass
+
+                has_sim_netlist = any(
+                    os.path.basename(p).lower().endswith(('_pnr.v', '_pnr.json'))
+                    for p in output_files
+                )
                 
                 implementation_outputs[design_name] = {
-                    **status,  # Include all status flags
+                    **status,
+                    'post_impl_netlist': has_sim_netlist or status.get('has_report', False) and os.path.isfile(
+                        os.path.join(pnr.netlist_dir, f"{design_name}_pnr.v")
+                    ),
                     'files': output_files,
                     'timestamp': latest_timestamp,
-                    'constraint_file': self._get_constraint_file_for_design(design_name)
+                    'constraint_file': self._get_constraint_file_for_design(design_name),
                 }
             
             return implementation_outputs
@@ -12600,24 +13362,36 @@ For more accurate power analysis:
     def _on_implementation_tree_clicked(self, item, column):
         """Handle clicks on the implementation tree for design selection and constraint file selection."""
         try:
-            # Get the design name from the clicked item
             design_name = None
             selected_item = None
             constraint_file = None
-            
-            # Check if this is a design item (not a category or file)
-            if item.parent() is not None:
-                # This is a child item
+
+            role = item.data(0, Qt.UserRole)
+            if isinstance(role, dict):
+                kind = role.get("kind")
+                if kind in ("design", "file", "group") and role.get("design"):
+                    design_name = role["design"]
+                    # Highlight the design row when a child file/group is clicked
+                    selected_item = item
+                    walk = item
+                    while walk is not None:
+                        walk_role = walk.data(0, Qt.UserRole)
+                        if isinstance(walk_role, dict) and walk_role.get("kind") == "design":
+                            selected_item = walk
+                            break
+                        if walk.text(1) == "Implementation" and walk.parent() and walk.parent().text(0) == "Implementation Outputs":
+                            selected_item = walk
+                            break
+                        walk = walk.parent()
+
+            if design_name is None and item.parent() is not None:
                 parent_text = item.parent().text(0)
                 item_type = item.text(1)
-                
-                # Check if it's an implemented design
+
                 if parent_text == "Implementation Outputs" and item_type == "Implementation":
                     design_name = item.text(0)
                     selected_item = item
-                # Or a synthesized design that might be implemented
                 elif parent_text == "Synthesized Designs" and item_type == "Synthesis":
-                    # Check if this design has implementation outputs
                     potential_design = item.text(0)
                     from cc_project_manager_pkg.nextpnr_commands import NextPnRCommands
                     pnr = NextPnRCommands()
@@ -12625,22 +13399,19 @@ For more accurate power analysis:
                     if potential_design in placed_designs:
                         design_name = potential_design
                         selected_item = item
-                # Check if it's a constraint file
                 elif parent_text == "Constraint Files" and item_type == "Constraint":
                     constraint_file = item.text(0)
                     selected_item = item
             
-            # Update selection and highlighting
             if design_name and selected_item:
                 self._highlight_selected_item(selected_item)
                 self._on_design_selection_changed(design_name)
                 logging.info(f"🎯 Selected design for analysis: {design_name}")
             elif constraint_file and selected_item:
                 self._highlight_selected_item(selected_item)
-                self._on_design_selection_changed(None)  # Clear design selection
+                self._on_design_selection_changed(None)
                 logging.info(f"📄 Selected constraint file: {constraint_file}")
             else:
-                # Clear selection if not a valid design or constraint file
                 self._clear_item_highlighting()
                 self._on_design_selection_changed(None)
                 

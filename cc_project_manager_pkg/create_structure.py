@@ -302,6 +302,8 @@ class CreateStructure:
                                             "post-implementation" : [os.path.join(self.project_path, "sim", "post-implementation")]},
                                    "src" : [os.path.join(self.project_path, "src")],
                                    "testbench" : [os.path.join(self.project_path, "testbench")],
+                                   # Verilog TBs for post-implementation (Icarus + SDF) simulation
+                                   "testbench_verilog" : [os.path.join(self.project_path, "testbench", "verilog")],
                                    "impl" : {
                                             "bitstream" : [os.path.join(self.project_path, "bitstream")],
                                             "logs" : [os.path.join(self.project_path, "logs")],

@@ -4,7 +4,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 **The project is work-in-progress.**
 
-**Current version: 0.4.1**
+**Current version: 0.4.2**
 
 ## Features
 
@@ -15,12 +15,12 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 ![image](https://github.com/user-attachments/assets/a0ae843a-f137-4827-b7ca-ab9f64bcf8c2)
  
-- **🔍 Simulation** - GHDL-based behavioral simulation with GTKWave integration
+- **🔍 Simulation** - Behavioral and post-synthesis (GHDL) plus **post-implementation** (Icarus Verilog + post-P&R netlist / SDF when available), with GTKWave for VCD waveforms. Post-impl is a functional post-P&R check with the open toolchain; full SDF timing models are not supplied by Cologne Chip in this flow yet.
 
 ![image](https://github.com/user-attachments/assets/a5212d34-19b4-4ca4-8e08-613a908ae48b)
 
 
-- **🛠️ Implementation** - Place & Route with **nextpnr-himbaechel** and bitstream packing with **gmpack** (OSS CAD Suite). Includes presets, multi-seed search (optional parallel jobs), timing reports, and placed/routed SVG previews.
+- **🛠️ Implementation** - Place & Route with **nextpnr-himbaechel** and bitstream packing with **gmpack** (OSS CAD Suite). Includes presets, multi-seed search (optional parallel jobs), timing reports, placed/routed SVG previews, and optional post-impl sim netlist (`--write` + `*_pnr.v`).
 
 ![image](https://github.com/user-attachments/assets/0c745c4f-4d77-4323-b3bc-b838b603b9cb)
 
@@ -44,7 +44,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ```
 GateMate_Project_Manager/
 ├── cc_project_manager_pkg/            # Core package modules
-│   ├── __init__.py                    # Package initialization and version (0.4.1)
+│   ├── __init__.py                    # Package initialization and version (0.4.2)
 │   ├── __main__.py                    # Main entry point
 │   ├── gui.py                         # PyQt5 GUI interface
 │   ├── cli.py                         # Interactive CLI interface
@@ -56,7 +56,7 @@ GateMate_Project_Manager/
 │   ├── toolchain_autosetup.py         # Pinned toolchain download/extract
 │   ├── toolchain_autosetup_dialog.py  # Auto-Setup Toolchain GUI
 │   ├── pnr_commands.py                # Legacy Cologne Chip p_r helpers (compat)
-│   ├── simulation_manager.py          # Simulation management
+│   ├── simulation_manager.py          # Simulation management (incl. Icarus post-impl)
 │   ├── hierarchy_manager.py           # Project hierarchy management
 │   ├── toolchain_manager.py           # Toolchain detection and management
 │   ├── boards_manager.py              # FPGA board definitions
@@ -64,6 +64,7 @@ GateMate_Project_Manager/
 │   ├── zi_fpga_loader.py              # Zector ZI-0001 serial FPGA loader
 │   ├── zi_fpga_loader_manager.py      # ZI loader manager for the GUI
 │   ├── upload_manager_factory.py      # Routes upload to the correct loader
+│   ├── resources/gatemate/            # Bundled GateMate sim helpers (e.g. cpesim.v)
 │   └── requirements.txt               # Python dependencies
 ├── setup.py                           # Package installation script
 ├── CHANGELOG.md                       # Version history and release notes
@@ -96,8 +97,8 @@ GateMate_Project_Manager/
    This creates global commands (see Usage section below).
 
 4. **Install the FPGA toolchain (OSS CAD Suite recommended):**
-   - Prefer **Configuration → Auto-Setup Toolchain** for a one-time machine install of pinned OSS CAD Suite + standalone GHDL (sets User PATH / `YOSYSHQ_ROOT`; GTKWave and openFPGALoader come from the suite)
-   - Or install manually: [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (`yosys`, `nextpnr-himbaechel`, `gmpack`, GTKWave) plus standalone GHDL
+   - Prefer **Configuration → Auto-Setup Toolchain** for a one-time machine install of pinned OSS CAD Suite + standalone GHDL (sets User PATH / `YOSYSHQ_ROOT`; GTKWave, openFPGALoader, and Icarus `iverilog`/`vvp` come from the suite)
+   - Or install manually: [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (`yosys`, `nextpnr-himbaechel`, `gmpack`, GTKWave, Icarus) plus standalone GHDL
    - Configure or verify tool paths under **Configuration** if needed
 
 5. **Get openFPGALoader for uploading to the FPGA (non-Zector boards)**
@@ -146,10 +147,12 @@ The GUI is organized into tabs for different operations:
 - **Full Implementation** - Run complete implementation flow
 
 #### **Simulation Tab**
-- **Behavioral Simulation** - Run pre-synthesis simulation
-- **Post-Synthesis Simulation** - Simulate synthesized design
+- **Behavioral Simulation** - Run pre-synthesis VHDL simulation (GHDL)
+- **Post-Synthesis Simulation** - Simulate GHDL synthesis netlist
+- **Post-Implementation Simulation** - Icarus + Verilog TB + post-P&R netlist/SDF (functional post-P&R check with open models; see dialog limitations)
+- **Add Verilog Testbench** - Register `.v` / `.sv` testbenches under `testbench/verilog/`
 - **Configure Simulation** - Set simulation parameters
-- **Launch Waveform Viewer** - Open GTKWave for results
+- **Launch Waveform Viewer** - Open GTKWave for the latest (or selected) VCD
 
 #### **Upload Tab**
 - **Device Detection** - Detect connected FPGA boards (openFPGALoader) or test serial + VERSION (Zector)
@@ -159,8 +162,8 @@ The GUI is organized into tabs for different operations:
 
 #### **Configuration Tab**
 - **Check Toolchain** - Verify tool availability and show versions
-- **Edit Toolchain Paths** - Configure tool locations (GHDL, Yosys, nextpnr, gmpack, …)
-- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects (GTKWave + openFPGALoader come from OSS CAD Suite)
+- **Edit Toolchain Paths** - Configure tool locations (GHDL, Yosys, nextpnr, gmpack, iverilog, vvp, …)
+- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects (GTKWave + openFPGALoader + Icarus come from OSS CAD Suite)
 - **Project Settings** - Modify project-specific settings
 
 #### **Output Window**
@@ -184,6 +187,7 @@ The bottom panel shows real-time log messages with:
 - **GHDL 5.0.1+**
 - **Yosys** with GateMate support (`synth_gatemate`) — typically via OSS CAD Suite
 - **nextpnr-himbaechel** and **gmpack** — typically via OSS CAD Suite
+- **Icarus Verilog** (`iverilog` / `vvp`) — for post-implementation simulation (OSS CAD Suite)
 - **openFPGALoader** (for JTAG/SPI boards such as Olimex GateMate EVB)
 
 ### Creating a New Project
@@ -200,17 +204,17 @@ Each project includes:
 ```
 project_name/
 ├── src/                    # VHDL source files
-├── testbench/             # VHDL testbench files
-├── constraints/           # Constraint files
-├── synth/                 # Synthesis outputs
-│   └── ...
-├── impl/                  # Implementation outputs
-│   ├── bitstream/         # Generated bitstreams
-│   ├── timing/            # Timing analysis / seed reports & SVGs
-│   └── netlist/           # Post-implementation netlists
-├── build/                 # Build artifacts
-├── logs/                  # Log files
-└── config/                # Configuration files
+├── testbench/              # VHDL testbenches
+│   └── verilog/            # Verilog/SystemVerilog TBs (post-impl sim)
+├── constraints/            # Constraint files
+├── synth/                  # Synthesis outputs
+├── bitstream/              # Generated bitstreams
+├── timing/                 # Timing / SDF / seed reports & SVGs
+├── netlist/                # Post-implementation netlists (*_pnr.v / JSON)
+├── sim/                    # Simulation outputs (behavioral / post-synth / post-impl VCDs)
+├── build/                  # Build artifacts
+├── logs/                   # Log files
+└── config/                 # Configuration files
 ```
 
 ## Testing
@@ -234,4 +238,4 @@ JOCRIX
 
 ## Version
 
-0.4.1
+0.4.2

@@ -18,6 +18,9 @@ class ToolChainManager(HierarchyManager):
         "nextpnr_himbaechel": "nextpnr-himbaechel.exe",
         "gmpack": "gmpack.exe",
         "openfpgaloader": "openFPGALoader.exe",  # optional; ZI loader preferred for Zector boards
+        # Icarus Verilog (post-implementation / SDF timing simulation)
+        "iverilog": "iverilog.exe",
+        "vvp": "vvp.exe",
     }
 
     # Empty placeholders for config keys. Absolute paths come only from user
@@ -28,9 +31,11 @@ class ToolChainManager(HierarchyManager):
         "nextpnr_himbaechel": "",
         "gmpack": "",
         "openfpgaloader": "",
+        "iverilog": "",
+        "vvp": "",
     }
 
-    # Core tools required for synthesis + implementation
+    # Core tools required for synthesis + implementation (Icarus is optional)
     REQUIRED_TOOLS = ("ghdl", "yosys", "nextpnr_himbaechel", "gmpack")
     
 
@@ -279,9 +284,18 @@ class ToolChainManager(HierarchyManager):
             parent = os.path.dirname(norm)
             if os.path.basename(parent).lower() == "bin":
                 root = os.path.dirname(parent)
-                if os.path.isdir(os.path.join(root, "lib")) or os.path.isfile(
-                    os.path.join(root, "environment.bat")
-                ):
+                # Prefer real OSS CAD Suite markers (environment.bat / yosys present).
+                # A standalone GTKWave tree also has bin/ + lib/ and must NOT count.
+                has_env = os.path.isfile(os.path.join(root, "environment.bat"))
+                has_yosys = (
+                    os.path.isfile(os.path.join(parent, "yosys.exe"))
+                    or os.path.isfile(os.path.join(parent, "yosys"))
+                )
+                has_iverilog = (
+                    os.path.isfile(os.path.join(parent, "iverilog.exe"))
+                    or os.path.isfile(os.path.join(parent, "iverilog"))
+                )
+                if has_env or has_yosys or has_iverilog:
                     return root
             # Walk parents looking for environment.bat (suite root marker)
             cur = parent if os.path.isdir(norm) else parent
@@ -301,6 +315,8 @@ class ToolChainManager(HierarchyManager):
             "gmpack",
             "openfpgaloader",
             "ghdl",
+            "iverilog",
+            "vvp",
         ):
             root = _root_from_tool_path(paths.get(tool, "") or "")
             if root:
@@ -316,7 +332,15 @@ class ToolChainManager(HierarchyManager):
         try:
             from .toolchain_autosetup import get_global_toolchain_defaults, load_global_settings
             defaults = get_global_toolchain_defaults()
-            for key in ("yosys", "gtkwave", "gmpack", "nextpnr_himbaechel", "openfpgaloader"):
+            for key in (
+                "yosys",
+                "gtkwave",
+                "gmpack",
+                "nextpnr_himbaechel",
+                "openfpgaloader",
+                "iverilog",
+                "vvp",
+            ):
                 root = _root_from_tool_path(defaults.get(key, "") or "")
                 if root:
                     return root
@@ -342,6 +366,10 @@ class ToolChainManager(HierarchyManager):
             "gmpack.exe",
             "gtkwave",
             "gtkwave.exe",
+            "iverilog",
+            "iverilog.exe",
+            "vvp",
+            "vvp.exe",
         ):
             found = shutil.which(exe_name)
             if found:
@@ -484,6 +512,9 @@ class ToolChainManager(HierarchyManager):
         if tool_name == "gmpack":
             # gmpack does not support --version; --help prints the banner + usage
             return ["--help"]
+        if tool_name in ("iverilog", "vvp"):
+            # Icarus tools print a version banner with -V
+            return ["-V"]
         return ["--version"]
 
     def _extract_version_string(self, tool_name: str, stdout: str, stderr: str) -> str:
@@ -518,6 +549,13 @@ class ToolChainManager(HierarchyManager):
         if tool_name == "ghdl":
             for ln in lines:
                 if ln.lower().startswith("ghdl"):
+                    return ln[:160]
+            return lines[0][:160]
+
+        if tool_name in ("iverilog", "vvp"):
+            for ln in lines:
+                lower = ln.lower()
+                if "icarus" in lower or "iverilog" in lower or "vvp" in lower:
                     return ln[:160]
             return lines[0][:160]
 
@@ -559,6 +597,17 @@ class ToolChainManager(HierarchyManager):
                 or "bitstream packer" in combined.lower()
                 or "gmpack" in combined.lower()
                 or result.returncode == 0
+            )
+            return ok, version
+
+        if tool_name in ("iverilog", "vvp"):
+            # Icarus -V often exits non-zero while still printing the banner
+            lower = combined.lower()
+            ok = (
+                result.returncode == 0
+                or "icarus" in lower
+                or "iverilog" in lower
+                or (tool_name == "vvp" and "vvp" in lower)
             )
             return ok, version
 
@@ -639,26 +688,57 @@ class ToolChainManager(HierarchyManager):
             logging.error(f"Unknown tool: {tool_name}")
             return ""
         
-        preference = self.get_tool_preference(tool_name)
-        
-        tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {})
-        configured = tool_paths.get(tool_name, "") or ""
+        preference = (self.get_tool_preference(tool_name) or "PATH").upper()
+        bare = self.__tool_chain[tool_name]
+
+        tool_paths = self.config.get("cologne_chip_gatemate_toolchain_paths", {}) or {}
+        configured = (tool_paths.get(tool_name, "") or "").strip()
+
+        # Seed from Auto-Setup machine defaults when project path is empty
+        if not configured or not os.path.isfile(configured):
+            try:
+                from .toolchain_autosetup import get_global_toolchain_defaults
+                global_path = (get_global_toolchain_defaults().get(tool_name) or "").strip()
+                if global_path and os.path.isfile(global_path):
+                    configured = global_path
+            except Exception:
+                pass
+
+        def _which_bare() -> str:
+            found = shutil.which(bare)
+            if found:
+                return found
+            # Non-Windows / PATH without .exe
+            no_ext = bare[:-4] if bare.lower().endswith(".exe") else bare
+            return shutil.which(no_ext) or ""
 
         if preference == "DIRECT":
-            if configured and os.path.exists(configured):
+            if configured and os.path.isfile(configured):
                 return configured
+            found = _which_bare()
+            if found:
+                logging.warning(
+                    f"{tool_name} preference is DIRECT but configured path missing; "
+                    f"using PATH hit {found}"
+                )
+                return found
             logging.warning(
-                f"{tool_name} preference is DIRECT but path not found, falling back to PATH"
+                f"{tool_name} preference is DIRECT but path not found, falling back to {bare}"
             )
-            return self.__tool_chain[tool_name]
-        elif preference == "PATH":
-            # Prefer configured absolute path when PATH binary is not yet activated
-            return self.__tool_chain[tool_name]
-        else:
-            if configured and os.path.exists(configured):
-                return configured
-            logging.warning(f"{tool_name} preference is {preference}, tool may not be available")
-            return ""
+            return bare
+
+        # PATH (or unknown): prefer a live PATH hit; else absolute configured /
+        # Auto-Setup path (running GUI often has a stale process PATH after Auto-Setup).
+        found = _which_bare()
+        if found:
+            return found
+        if configured and os.path.isfile(configured):
+            logging.info(
+                f"{tool_name}: not on process PATH — using configured/Auto-Setup path "
+                f"{configured}"
+            )
+            return configured
+        return bare
 
     def check_toolchain_path(self) -> bool:
         """check if the colognechip gatemate toolchain is available through the PATH environment variable"""

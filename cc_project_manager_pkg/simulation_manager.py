@@ -1172,13 +1172,351 @@ class SimulationManager(GHDLCommands):
         self.project_config = self.load_config()
         ###.... do stuff
         ##Use update_config()
-    
+        return False
+
+    def find_gatemate_cells_sim(self) -> Optional[str]:
+        """Locate Yosys GateMate ``cells_sim.v`` under OSS CAD Suite share."""
+        from .toolchain_manager import ToolChainManager
+
+        tcm = ToolChainManager()
+        roots = []
+        oss = tcm.get_oss_cad_suite_root()
+        if oss:
+            roots.append(oss)
+        try:
+            yosys = tcm.get_tool_command("yosys")
+            if yosys and os.path.isfile(yosys):
+                bin_dir = os.path.dirname(os.path.abspath(yosys))
+                roots.append(os.path.dirname(bin_dir))
+        except Exception:
+            pass
+
+        for root in roots:
+            if not root:
+                continue
+            for rel in (
+                os.path.join("share", "yosys", "gatemate", "cells_sim.v"),
+                os.path.join("share", "gatemate", "cells_sim.v"),
+            ):
+                path = os.path.join(root, rel)
+                if os.path.isfile(path):
+                    logging.info(f"Found GateMate cells_sim.v at {path}")
+                    return path
+        logging.error("Could not locate GateMate cells_sim.v in OSS CAD Suite share")
+        return None
+
+    def find_gatemate_cpesim(self) -> Optional[str]:
+        """Locate physical-cell sim models (``cpesim.v``) for post-P&R netlists.
+
+        nextpnr ``--write`` + Yosys ``write_verilog`` emits ``CPE_*`` / ``PLL`` /
+        ``CLKIN`` / ``GLBOUT`` / ``IOSEL`` primitives. Those are not in
+        ``cells_sim.v``; YosysHQ prjpeppercorn ``cpesim.v`` provides them.
+        """
+        candidates = []
+
+        # Project-local copy (preferred — may include PLL behavioral tweaks)
+        try:
+            from .hierarchy_manager import HierarchyManager
+
+            hierarchy = HierarchyManager()
+            hierarchy.ensure_post_impl_project_structure()
+            struct = (hierarchy.config or {}).get("project_structure", {})
+            vtb = struct.get("testbench_verilog") or []
+            if isinstance(vtb, list) and vtb:
+                candidates.append(os.path.join(vtb[0], "cpesim.v"))
+            project_path = (hierarchy.config or {}).get("project_path")
+            if project_path:
+                candidates.append(
+                    os.path.join(project_path, "testbench", "verilog", "cpesim.v")
+                )
+        except Exception:
+            pass
+
+        # Bundled with the package
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(
+            os.path.join(pkg_dir, "resources", "gatemate", "cpesim.v")
+        )
+
+        for path in candidates:
+            if path and os.path.isfile(path):
+                logging.info(f"Found GateMate cpesim.v at {path}")
+                return path
+
+        logging.warning(
+            "cpesim.v not found — post-P&R netlists that use CPE_*/PLL cells "
+            "will not elaborate. Place cpesim.v under testbench/verilog/."
+        )
+        return None
+
+    def get_post_impl_artifacts(self, design_name: str) -> dict:
+        """Collect post-implementation simulation inputs for ``design_name``."""
+        from .nextpnr_commands import NextPnRCommands
+
+        pnr = NextPnRCommands()
+        analysis = pnr.get_analysis_artifacts(design_name)
+        netlist_v = os.path.join(pnr.netlist_dir, f"{design_name}_pnr.v")
+        pnr_json = os.path.join(pnr.netlist_dir, f"{design_name}_pnr.json")
+        sdf = os.path.join(pnr.timing_dir, f"{design_name}.sdf")
+        if not os.path.isfile(sdf):
+            sdfs = analysis.get("sdf_files") or []
+            sdf = sdfs[0] if sdfs else None
+        if not os.path.isfile(netlist_v):
+            # Fallbacks so users can smoke-test before regenerating with --write
+            for alt in (
+                os.path.join(pnr.netlist_dir, f"{design_name}.v"),
+                os.path.join(pnr.synth_dir, f"{design_name}_synth.v"),
+            ):
+                if os.path.isfile(alt):
+                    logging.warning(
+                        "Using fallback Verilog netlist %s "
+                        "(prefer netlist/%s_pnr.v from P&R with sim-netlist enabled)",
+                        alt,
+                        design_name,
+                    )
+                    netlist_v = alt
+                    break
+        return {
+            "design": design_name,
+            "netlist_verilog": netlist_v if os.path.isfile(netlist_v) else None,
+            "pnr_json": pnr_json if os.path.isfile(pnr_json) else None,
+            "sdf": sdf if sdf and os.path.isfile(sdf) else None,
+            "report_json": analysis.get("report_json"),
+            "impl_txt": analysis.get("impl_txt"),
+            "cells_sim": self.find_gatemate_cells_sim(),
+            "cpesim": self.find_gatemate_cpesim(),
+        }
+
+    def post_implementation_simulate(
+        self,
+        design_name: str,
+        testbench_module: str = None,
+        testbench_file: str = None,
+        simulation_time: int = None,
+        time_prefix: str = None,
+        apply_sdf: bool = True,
+    ) -> bool:
+        """Run post-implementation timing simulation with Icarus Verilog.
+
+        Requires a user-supplied Verilog testbench that instantiates the
+        post-P&R netlist. Waveforms are written as VCD for GTKWave.
+        """
+        import shutil
+        from .toolchain_manager import ToolChainManager
+        from .hierarchy_manager import HierarchyManager
+
+        logging.info("Starting post-implementation (Icarus) simulation")
+        try:
+            self.ensure_post_impl_project_structure()
+        except Exception:
+            pass
+
+        if not design_name:
+            logging.error("No design name provided for post-implementation simulation")
+            return False
+
+        hierarchy = HierarchyManager()
+        if not testbench_file and testbench_module:
+            testbench_file = hierarchy.get_verilog_testbench_file(testbench_module)
+        if not testbench_module and testbench_file:
+            testbench_module = hierarchy.parse_module_name_from_verilog(testbench_file)
+        if not testbench_file or not os.path.isfile(testbench_file):
+            logging.error(
+                "No Verilog testbench selected/found. Add a .v/.sv testbench under "
+                "testbench/verilog for post-implementation simulation."
+            )
+            print("[X] Verilog testbench required for post-implementation simulation")
+            return False
+        if not testbench_module:
+            testbench_module = os.path.splitext(os.path.basename(testbench_file))[0]
+
+        artifacts = self.get_post_impl_artifacts(design_name)
+        netlist_v = artifacts.get("netlist_verilog")
+        sdf = artifacts.get("sdf")
+        cells_sim = artifacts.get("cells_sim")
+        cpesim = artifacts.get("cpesim")
+
+        if not netlist_v:
+            logging.error(
+                f"Post-impl Verilog netlist missing for '{design_name}'. "
+                "Enable Generate post-impl sim netlist in P&R, or run Generate Post-Impl Netlist."
+            )
+            print("[X] Post-implementation Verilog netlist not found")
+            return False
+        if apply_sdf and not sdf:
+            logging.error(
+                f"SDF file missing for '{design_name}'. Enable Generate SDF in Place & Route."
+            )
+            print("[X] SDF timing file not found")
+            return False
+        if not cells_sim:
+            logging.error("GateMate cells_sim.v not found in OSS CAD Suite")
+            print("[X] GateMate cells_sim.v not found")
+            return False
+        if not cpesim:
+            logging.error(
+                "GateMate cpesim.v not found (needed for CPE_*/PLL/CLKIN post-P&R cells)"
+            )
+            print(
+                "[X] cpesim.v not found — place it under testbench/verilog/ "
+                "(YosysHQ prjpeppercorn cpesim.v)"
+            )
+            return False
+
+        if simulation_time is None or time_prefix is None:
+            sim_settings = self.get_simulation_length()
+            if not sim_settings:
+                simulation_time, time_prefix = 1000, "ns"
+            else:
+                simulation_time, time_prefix = sim_settings
+
+        sim_dirs = (
+            self.project_config.get("project_structure", {})
+            .get("sim", {})
+            .get("post-implementation", [])
+        )
+        sim_dir = sim_dirs[0] if sim_dirs else os.path.join(
+            self.project_config.get("project_path", "."), "sim", "post-implementation"
+        )
+        os.makedirs(sim_dir, exist_ok=True)
+
+        vcd_path = os.path.join(sim_dir, f"{design_name}_post_impl.vcd")
+        work_vvp = os.path.join(sim_dir, f"{design_name}_post_impl.vvp")
+
+        tcm = ToolChainManager()
+        try:
+            iverilog = tcm.get_tool_command("iverilog")
+            vvp = tcm.get_tool_command("vvp")
+        except Exception as e:
+            logging.error(f"Could not resolve Icarus tools: {e}")
+            print("[X] Icarus iverilog/vvp not configured")
+            return False
+
+        if not iverilog or not vvp:
+            logging.error("Icarus iverilog/vvp not available")
+            print("[X] Icarus iverilog/vvp not available — configure in Toolchain Paths")
+            return False
+
+        env = tcm.get_tool_run_env()
+        compile_cmd = [
+            iverilog,
+            "-g2012",
+            "-o",
+            work_vvp,
+        ]
+        # Required for $sdf_annotate / interconnect delays
+        if apply_sdf and sdf:
+            compile_cmd.extend(["-gspecify", "-ginterconnect"])
+        # Physical post-P&R cells (CPE_*, PLL, CLKIN, …) then CC_* library
+        compile_cmd.extend([
+            cpesim,
+            cells_sim,
+            netlist_v,
+            testbench_file,
+        ])
+        logging.info(f"Icarus compile: {' '.join(compile_cmd)}")
+        print(f"Compiling with iverilog ({testbench_module})...")
+        try:
+            comp = subprocess.run(
+                compile_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=300,
+                cwd=sim_dir,
+            )
+        except Exception as e:
+            logging.error(f"iverilog failed to start: {e}")
+            print(f"[X] iverilog error: {e}")
+            return False
+
+        if comp.returncode != 0:
+            logging.error(f"iverilog compile failed:\n{comp.stderr or comp.stdout}")
+            print("[X] iverilog compile failed — check logs")
+            return False
+
+        run_cmd = [vvp, work_vvp]
+        # vvp treats "--" inside plusargs as end-of-options (this project's
+        # folder name contains "--zector--"). Prefer paths relative to cwd
+        # (sim_dir) and forward slashes for $dumpfile / $sdf_annotate.
+        def _iv_rel(path: str) -> str:
+            rel = os.path.relpath(os.path.abspath(path), start=os.path.abspath(sim_dir))
+            return rel.replace("\\", "/")
+
+        if apply_sdf and sdf:
+            run_cmd.append(f"+SDF={_iv_rel(sdf)}")
+        run_cmd.extend([
+            f"+VCD={os.path.basename(vcd_path)}",
+            f"+STOP_TIME={simulation_time}{time_prefix}",
+        ])
+
+        logging.info(f"Icarus run: {' '.join(run_cmd)}")
+        print(f"Running vvp ({simulation_time}{time_prefix})...")
+        try:
+            run = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=600,
+                cwd=sim_dir,
+            )
+        except Exception as e:
+            logging.error(f"vvp failed to start: {e}")
+            print(f"[X] vvp error: {e}")
+            self.record_simulation_run(design_name, "post-implementation", vcd_path, False)
+            return False
+
+        if run.stdout:
+            for line in run.stdout.strip().splitlines():
+                logging.info(f"[vvp] {line}")
+        if run.stderr:
+            for line in run.stderr.strip().splitlines():
+                logging.warning(f"[vvp] {line}")
+
+        if not os.path.isfile(vcd_path):
+            try:
+                for name in os.listdir(sim_dir):
+                    if name.endswith(".vcd") and design_name in name:
+                        candidate = os.path.join(sim_dir, name)
+                        if candidate != vcd_path:
+                            try:
+                                shutil.move(candidate, vcd_path)
+                            except Exception:
+                                vcd_path = candidate
+                        break
+            except OSError:
+                pass
+
+        success = run.returncode == 0
+        if success and not os.path.isfile(vcd_path):
+            logging.warning(
+                "vvp succeeded but no VCD found — ensure the Verilog TB dumps waves "
+                f"(e.g. $dumpfile / $dumpvars) toward {vcd_path}"
+            )
+        self.record_simulation_run(design_name, "post-implementation", vcd_path, success)
+        if success:
+            logging.info("Post-implementation simulation completed")
+            print(f"[OK] Post-implementation simulation finished. VCD: {vcd_path}")
+            print("Open the VCD in GTKWave to view waveforms.")
+            return True
+
+        logging.error(f"vvp failed with code {run.returncode}")
+        print("[X] Post-implementation simulation failed")
+        return False
+
     def launch_wave(self, vcd_file_path: str = None) -> bool:
         """
         Launch GTKWave with the specified VCD file or the latest simulation VCD
         
         Args:
-            vcd_file_path (str, optional): Path to VCD file. If None, uses latest behavioral simulation
+            vcd_file_path (str, optional): Path to VCD file. If None, uses the
+                most recently modified VCD among behavioral, post-synthesis, and
+                post-implementation simulations.
             
         Returns:
             bool: True if GTKWave launched successfully, False otherwise
@@ -1193,20 +1531,30 @@ class SimulationManager(GHDLCommands):
         
         # Determine VCD file to open
         if vcd_file_path is None:
-            # Find the latest behavioral simulation VCD
             available_sims = self.get_available_simulations()
-            behavioral_sims = available_sims.get("behavioral", [])
-            
-            if not behavioral_sims:
-                print("[X] No behavioral simulation VCD files found")
+            all_sims = []
+            for sim_type in ("behavioral", "post-synthesis", "post-implementation"):
+                for sim in available_sims.get(sim_type, []) or []:
+                    entry = dict(sim)
+                    entry["sim_type"] = sim_type
+                    all_sims.append(entry)
+
+            if not all_sims:
+                print("[X] No simulation VCD files found")
                 logging.error("No VCD files found for GTKWave")
                 return False
-            
-            # Get the most recent VCD file
-            latest_sim = max(behavioral_sims, key=lambda x: x["modified"])
+
+            latest_sim = max(all_sims, key=lambda x: x["modified"])
             vcd_file_path = latest_sim["path"]
-            print(f"Using latest simulation: {latest_sim['name']}")
-        
+            print(
+                f"Using latest {latest_sim.get('sim_type', 'simulation')} VCD: "
+                f"{latest_sim['name']}"
+            )
+            logging.info(
+                "Selected latest VCD (%s): %s",
+                latest_sim.get("sim_type"),
+                vcd_file_path,
+            )        
         # Check if VCD file exists
         if not os.path.exists(vcd_file_path):
             print(f"[X] VCD file not found: {vcd_file_path}")

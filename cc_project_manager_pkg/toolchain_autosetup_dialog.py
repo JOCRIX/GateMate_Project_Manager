@@ -120,7 +120,8 @@ class AutoSetupToolchainDialog(QDialog):
         component_blurbs = {
             "oss_cad_suite": (
                 "yosys: synthesis · nextpnr: place & route · gmpack: bitstream generator · "
-                "openFPGALoader: board programming · GTKWave: VCD waveform viewer"
+                "openFPGALoader: board programming · GTKWave: VCD waveform viewer · "
+                "Icarus iverilog/vvp: post-implementation (SDF) simulation"
             ),
             "ghdl": (
                 "Standalone VHDL simulator / elaborator (Windows mcode)\n"

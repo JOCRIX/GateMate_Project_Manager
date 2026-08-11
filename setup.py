@@ -17,7 +17,7 @@ def read_requirements():
 
 setup(
     name="cc-project-manager",
-    version="0.4.1",
+    version="0.4.2",
     author="JOCRIX",
     author_email="",  # Add email if desired
     description="A comprehensive GateMate FPGA project management tool with GUI and CLI interfaces for GHDL, Yosys, nextpnr-himbaechel, and gmpack workflows",
@@ -58,9 +58,13 @@ setup(
     },
     include_package_data=True,
     package_data={
-        "cc_project_manager_pkg": ["*.yml", "*.yaml"],
+        "cc_project_manager_pkg": [
+            "*.yml",
+            "*.yaml",
+            "resources/gatemate/*",
+        ],
     },
-    keywords="fpga vhdl synthesis simulation gatemate ghdl yosys gui pyqt5 jocrix",
+    keywords="fpga vhdl synthesis simulation gatemate ghdl yosys iverilog gui pyqt5 jocrix",
     project_urls={
         "Bug Reports": "",  # Add if available
         "Source": "",       # Add if available

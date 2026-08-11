@@ -103,7 +103,7 @@ def _http_get(url: str, timeout: int = 120):
     req = Request(
         url,
         headers={
-            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4.1",
+            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4.2",
             "Accept": "*/*",
         },
     )
@@ -211,6 +211,9 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
         ofl = find_executable(oss, ["openFPGALoader.exe", "openfpgaloader.exe", "openFPGALoader"])
         # GTKWave ships with OSS CAD Suite (matching GTK/DLL deps) — no separate download.
         gtk_oss = find_executable(oss, ["gtkwave.exe", "gtkwave"])
+        # Icarus Verilog (post-implementation SDF timing simulation)
+        iverilog = find_executable(oss, ["iverilog.exe", "iverilog"])
+        vvp = find_executable(oss, ["vvp.exe", "vvp"])
         if yosys:
             paths["yosys"] = yosys
         if nextpnr:
@@ -221,6 +224,10 @@ def resolve_tool_paths(install_root: str) -> Dict[str, str]:
             paths["openfpgaloader"] = ofl
         if gtk_oss:
             paths["gtkwave"] = gtk_oss
+        if iverilog:
+            paths["iverilog"] = iverilog
+        if vvp:
+            paths["vvp"] = vvp
 
     for root in (os.path.join(install_root, "ghdl"), install_root):
         ghdl = find_executable(root, ["ghdl.exe", "ghdl"])
@@ -632,14 +639,23 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
 
     notes.extend(configure_teroshdl_settings(resolved))
 
-    # Prefer PATH once User PATH is set; keep DIRECT as backup for this session.
+    # Prefer DIRECT once User PATH is set so the *current* app session can run
+    # tools without waiting for a logoff/Explorer restart (process PATH is stale).
     try:
         from .toolchain_manager import ToolChainManager
         from .simulation_manager import SimulationManager
 
         tcm = ToolChainManager()
         if getattr(tcm, "config_path", None):
-            for tool in ("ghdl", "yosys", "nextpnr_himbaechel", "gmpack", "openfpgaloader"):
+            for tool in (
+                "ghdl",
+                "yosys",
+                "nextpnr_himbaechel",
+                "gmpack",
+                "openfpgaloader",
+                "iverilog",
+                "vvp",
+            ):
                 path = resolved.get(tool)
                 if path and tcm.add_tool_path(tool, path):
                     # DIRECT until the user restarts so Check Toolchain works now

@@ -1,8 +1,10 @@
 include README.md
+include CHANGELOG.md
 include requirements.txt
 include LICENSE
 recursive-include cc_project_manager_pkg *.py
 recursive-include cc_project_manager_pkg *.yml
 recursive-include cc_project_manager_pkg *.yaml
+recursive-include cc_project_manager_pkg/resources *
 global-exclude __pycache__
 global-exclude *.py[co] 

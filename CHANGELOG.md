@@ -5,6 +5,31 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-08-12
+
+### Added
+
+- **Post-implementation simulation** — Icarus Verilog (`iverilog` / `vvp`) flow: Verilog testbench + post-P&R netlist (`nextpnr --write` → Yosys `*_pnr.v`) + optional SDF, with VCD output for GTKWave.
+- **Icarus toolchain support** — `iverilog` and `vvp` registered in toolchain paths, status probes, and Auto-Setup discovery (OSS CAD Suite).
+- **Verilog testbenches** — Project hierarchy `testbench/verilog/`; Add Verilog Testbench; Simulation Status groups VHDL vs Verilog TBs with sources / timing / outputs trees.
+- **Post-impl sim netlist from P&R** — Place & Route option to emit nextpnr `--write` JSON and export `netlist/<design>_pnr.v` (top renamed to the design name).
+- **Bundled `cpesim.v`** — Physical GateMate cell models under `resources/gatemate/` (and project `testbench/verilog/`) for elaborating post-P&R primitives.
+- **Implementation / Synthesis status trees** — Expandable Design/File trees with grouped outputs (impl/bitstream/timing/netlist, synth netlists, etc.).
+- **Analysis viewers on nextpnr artifacts** — Timing / utilization / placement use nextpnr reports; Power Analysis remains unavailable/greyed for this flow.
+
+### Changed
+
+- **Launch Waveform Viewer** — Opens the newest VCD across behavioral, post-synthesis, and post-implementation (or the Simulation Status selection).
+- **Post-Implementation Simulation dialog** — Intro text documents current open-toolchain limitations (functional post-P&R check; SDF IOPATH largely not annotated without vendor timing models).
+- Icarus plusargs use sim-directory-relative paths so Windows project folders containing `--` do not break `vvp` / `$dumpfile`.
+- Version bump to **0.4.2**.
+
+### Fixed
+
+- Place & Route dialog always cleared **Generate post-impl sim netlist** (`generate_sim_netlist` overwritten to `False` in collected settings).
+- Tool command resolution falls back to configured / Auto-Setup absolute paths when process PATH is stale after Auto-Setup.
+- Implementation status tree expansion / branch visibility on dark theme.
+
 ## [0.4.1] - 2026-08-10
 
 ### Added

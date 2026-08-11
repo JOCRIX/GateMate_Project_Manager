@@ -299,7 +299,10 @@ class PlaceAndRouteSettingsDialog(QDialog):
         reports_layout = QVBoxLayout(reports_group)
         self.report_check = QCheckBox("Generate timing/utilization JSON")
         self.keep_log_check = QCheckBox("Keep P&R log")
-        self.sdf_check = QCheckBox("Generate SDF")
+        self.sdf_check = QCheckBox("Generate SDF (for post-implementation timing sim)")
+        self.sim_netlist_check = QCheckBox(
+            "Generate post-impl sim netlist (nextpnr --write + Verilog)"
+        )
         self.placed_svg_check = QCheckBox("Generate placed SVG")
         self.routed_svg_check = QCheckBox("Generate routed SVG")
         self.gui_check = QCheckBox("Open GUI after routing")
@@ -308,6 +311,7 @@ class PlaceAndRouteSettingsDialog(QDialog):
             self.report_check,
             self.keep_log_check,
             self.sdf_check,
+            self.sim_netlist_check,
             self.placed_svg_check,
             self.routed_svg_check,
             self.gui_check,
@@ -551,6 +555,8 @@ class PlaceAndRouteSettingsDialog(QDialog):
             self.report_check.setChecked(bool(settings.get("generate_report", True)))
             self.keep_log_check.setChecked(bool(settings.get("keep_log", True)))
             self.sdf_check.setChecked(bool(settings.get("generate_sdf", False)))
+            if hasattr(self, "sim_netlist_check"):
+                self.sim_netlist_check.setChecked(bool(settings.get("generate_sim_netlist", False)))
             self.placed_svg_check.setChecked(bool(settings.get("generate_placed_svg", False)))
             self.routed_svg_check.setChecked(bool(settings.get("generate_routed_svg", False)))
             self.gui_check.setChecked(bool(settings.get("open_gui", False)))
@@ -605,6 +611,10 @@ class PlaceAndRouteSettingsDialog(QDialog):
                 "generate_report": self.report_check.isChecked(),
                 "keep_log": self.keep_log_check.isChecked(),
                 "generate_sdf": self.sdf_check.isChecked(),
+                "generate_sim_netlist": bool(
+                    getattr(self, "sim_netlist_check", None)
+                    and self.sim_netlist_check.isChecked()
+                ),
                 "generate_placed_svg": self.placed_svg_check.isChecked(),
                 "generate_routed_svg": self.routed_svg_check.isChecked(),
                 "open_gui": self.gui_check.isChecked(),
@@ -627,7 +637,6 @@ class PlaceAndRouteSettingsDialog(QDialog):
                 "design_name": self.design_name,
                 "constraint_file": self.constraints_combo.currentData(),
                 "run_timing_analysis": False,
-                "generate_sim_netlist": False,
             }
         )
         return settings

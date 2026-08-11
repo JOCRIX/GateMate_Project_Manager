@@ -74,6 +74,7 @@ DEFAULT_PNR_SETTINGS: Dict[str, Any] = {
     "debug": False,
     "generate_bitstream": True,
     "run_timing_analysis": False,
+    # nextpnr --write JSON + Yosys Verilog for post-implementation (Icarus) sim
     "generate_sim_netlist": False,
 }
 
@@ -897,6 +898,12 @@ class NextPnRCommands(ToolChainManager):
 
         if settings.get("generate_sdf"):
             cmd.extend(["--sdf", os.path.join(self.timing_dir, f"{design_name}_seed_{int(seed):03d}.sdf")])
+        if settings.get("generate_sim_netlist"):
+            # Post-P&R JSON used to export a simulatable Verilog netlist via Yosys
+            write_json = os.path.join(
+                self.netlist_dir, f"{design_name}_seed_{int(seed):03d}_pnr.json"
+            )
+            cmd.extend(["--write", write_json])
         if settings.get("generate_placed_svg"):
             cmd.extend([
                 "--placed-svg",
@@ -1158,6 +1165,12 @@ class NextPnRCommands(ToolChainManager):
         self.last_command = None
         self.last_seed_results = []
         self.last_bitstream_seed = None
+
+        # Re-resolve after Auto-Setup / path changes (init may have cached a bare exe name)
+        self.nextpnr_cmd = self._resolve_tool_command(
+            "nextpnr_himbaechel", _FALLBACK_NEXTPNR
+        )
+        self.gmpack_cmd = self._resolve_tool_command("gmpack", _FALLBACK_GMPACK)
 
         pnr_settings = self.merge_pnr_settings(settings)
         if pnr_settings.get("device"):
@@ -1426,6 +1439,34 @@ class NextPnRCommands(ToolChainManager):
                         f"Bitstream source seed: {seed} "
                         f"(implementation → {os.path.basename(canonical)})"
                     )
+                    # Promote post-impl sim artifacts for this seed
+                    seed_tag = f"{int(seed):03d}"
+                    seed_pnr = os.path.join(
+                        self.netlist_dir, f"{design_name}_seed_{seed_tag}_pnr.json"
+                    )
+                    if os.path.isfile(seed_pnr):
+                        try:
+                            shutil.copy2(
+                                seed_pnr,
+                                os.path.join(self.netlist_dir, f"{design_name}_pnr.json"),
+                            )
+                        except Exception as e:
+                            self.nextpnr_logger.warning(
+                                f"Could not copy canonical P&R JSON: {e}"
+                            )
+                    seed_sdf = os.path.join(
+                        self.timing_dir, f"{design_name}_seed_{seed_tag}.sdf"
+                    )
+                    if os.path.isfile(seed_sdf):
+                        try:
+                            shutil.copy2(
+                                seed_sdf,
+                                os.path.join(self.timing_dir, f"{design_name}.sdf"),
+                            )
+                        except Exception as e:
+                            self.nextpnr_logger.warning(
+                                f"Could not copy canonical SDF: {e}"
+                            )
 
                 with self._state_lock:
                     self.last_error = None
@@ -1783,6 +1824,29 @@ class NextPnRCommands(ToolChainManager):
             except Exception as e:
                 self.nextpnr_logger.warning(f"Could not copy best report: {e}")
 
+        # Promote best-seed post-P&R JSON / SDF for post-implementation simulation
+        seed_tag = f"{int(best['seed']):03d}"
+        seed_pnr_json = os.path.join(
+            self.netlist_dir, f"{design_name}_seed_{seed_tag}_pnr.json"
+        )
+        if os.path.isfile(seed_pnr_json):
+            try:
+                shutil.copy2(
+                    seed_pnr_json,
+                    os.path.join(self.netlist_dir, f"{design_name}_pnr.json"),
+                )
+            except Exception as e:
+                self.nextpnr_logger.warning(f"Could not copy best P&R JSON: {e}")
+        seed_sdf = os.path.join(self.timing_dir, f"{design_name}_seed_{seed_tag}.sdf")
+        if os.path.isfile(seed_sdf):
+            try:
+                shutil.copy2(
+                    seed_sdf,
+                    os.path.join(self.timing_dir, f"{design_name}.sdf"),
+                )
+            except Exception as e:
+                self.nextpnr_logger.warning(f"Could not copy best SDF: {e}")
+
         self.last_error = None
         self.last_return_code = 0
         self._emit_live(
@@ -1828,6 +1892,8 @@ class NextPnRCommands(ToolChainManager):
         """
         self.last_error = None
         self.last_return_code = None
+
+        self.gmpack_cmd = self._resolve_tool_command("gmpack", _FALLBACK_GMPACK)
 
         if impl_file is None:
             impl_file = os.path.join(self.work_dir, f"{design_name}_impl.txt")
@@ -1952,6 +2018,8 @@ class NextPnRCommands(ToolChainManager):
         pnr_settings = self.merge_pnr_settings(settings)
         if generate_bitstream is not None:
             pnr_settings["generate_bitstream"] = generate_bitstream
+        if generate_sim_netlist:
+            pnr_settings["generate_sim_netlist"] = True
 
         if not self.place_and_route(
             design_name,
@@ -1967,10 +2035,12 @@ class NextPnRCommands(ToolChainManager):
                 "Timing analysis requested: results are included in nextpnr logs/reports "
                 "(dedicated post-P&R timing step is not yet automated)."
             )
-        if generate_sim_netlist:
-            self.nextpnr_logger.warning(
-                "Post-implementation netlist generation is not supported with gmpack yet; skipping."
-            )
+        if generate_sim_netlist or pnr_settings.get("generate_sim_netlist"):
+            if not self.generate_post_impl_netlist(design_name, netlist_format="verilog"):
+                self.nextpnr_logger.warning(
+                    "Post-implementation Verilog netlist export failed; "
+                    "P&R may still have succeeded."
+                )
 
         if pnr_settings.get("generate_bitstream", True):
             if not self.generate_bitstream(design_name):
@@ -2123,11 +2193,118 @@ class NextPnRCommands(ToolChainManager):
         netlist_format: str = "verilog",
         options: Optional[List[str]] = None,
     ) -> bool:
-        """Post-implementation netlist export is not part of the gmpack flow yet."""
-        del netlist_format, options
-        self.last_error = (
-            "Post-implementation netlist generation is not supported with the "
-            f"gmpack bitstream flow yet (design={design_name})."
+        """Export a post-P&R Verilog netlist for Icarus / SDF simulation.
+
+        Expects nextpnr ``--write`` JSON at ``netlist/{design}_pnr.json`` (or a
+        per-seed ``*_seed_*_pnr.json``). Converts via Yosys::
+
+            read_json <pnr.json>; write_verilog -norename -noattr <out.v>
+        """
+        del options
+        fmt = (netlist_format or "verilog").lower()
+        if fmt not in ("verilog", "v", "sv"):
+            self.last_error = (
+                f"Unsupported post-impl netlist format '{netlist_format}'. "
+                "Use verilog for Icarus post-implementation simulation."
+            )
+            self.nextpnr_logger.error(self.last_error)
+            return False
+
+        os.makedirs(self.netlist_dir, exist_ok=True)
+
+        canonical_json = os.path.join(self.netlist_dir, f"{design_name}_pnr.json")
+        pnr_json = canonical_json if os.path.isfile(canonical_json) else None
+        if not pnr_json:
+            # Fall back to seed JSON (prefer last bitstream seed)
+            candidates = []
+            try:
+                for name in os.listdir(self.netlist_dir):
+                    if name.startswith(f"{design_name}_seed_") and name.endswith("_pnr.json"):
+                        candidates.append(os.path.join(self.netlist_dir, name))
+            except OSError:
+                candidates = []
+            if self.last_bitstream_seed is not None:
+                tag = f"{int(self.last_bitstream_seed):03d}"
+                preferred = os.path.join(
+                    self.netlist_dir, f"{design_name}_seed_{tag}_pnr.json"
+                )
+                if os.path.isfile(preferred):
+                    pnr_json = preferred
+            if not pnr_json and candidates:
+                pnr_json = sorted(candidates)[-1]
+            if pnr_json and not os.path.isfile(canonical_json):
+                try:
+                    shutil.copy2(pnr_json, canonical_json)
+                    pnr_json = canonical_json
+                except Exception:
+                    pass
+
+        if not pnr_json or not os.path.isfile(pnr_json):
+            self.last_error = (
+                f"No post-P&R JSON found for '{design_name}'. "
+                "Re-run Place & Route with “Generate post-impl sim netlist” enabled "
+                "(nextpnr --write)."
+            )
+            self.nextpnr_logger.error(self.last_error)
+            return False
+
+        out_v = os.path.join(self.netlist_dir, f"{design_name}_pnr.v")
+        yosys_cmd = self._resolve_tool_command("yosys", "yosys")
+        # nextpnr --write JSON exports the top module as "top"; rename to the
+        # design name so testbenches can instantiate the entity/design name.
+        script = (
+            f"read_json {pnr_json}; "
+            f"rename top {design_name}; "
+            f"write_verilog -norename -noattr {out_v}"
         )
-        self.nextpnr_logger.warning(self.last_error)
-        return False
+        cmd = [yosys_cmd, "-p", script]
+        self.last_command = list(cmd)
+        self.nextpnr_logger.info(
+            f"Exporting post-implementation Verilog netlist for {design_name}"
+        )
+        self.nextpnr_logger.info(f"Input JSON: {pnr_json}")
+        self.nextpnr_logger.info(f"Output Verilog: {out_v}")
+
+        try:
+            result = self._run_tool_streaming(
+                cmd,
+                tool_label="yosys",
+                timeout=300,
+                line_prefix="[yosys-post-impl]",
+            )
+        except Exception as e:
+            self.last_error = f"Yosys post-impl netlist export failed: {e}"
+            self.nextpnr_logger.error(self.last_error)
+            return False
+
+        if result.returncode != 0 or not os.path.isfile(out_v):
+            self.last_return_code = result.returncode
+            self.last_error = self._format_tool_error(result, "yosys") or (
+                f"Yosys did not produce {out_v}"
+            )
+            self.nextpnr_logger.error(self.last_error)
+            return False
+
+        # Safety net if rename was a no-op / failed silently
+        try:
+            with open(out_v, "r", encoding="utf-8", errors="replace") as fh:
+                verilog = fh.read()
+            import re
+            if re.search(r"\bmodule\s+top\b", verilog) and design_name != "top":
+                verilog = re.sub(
+                    r"\bmodule\s+top\b", f"module {design_name}", verilog, count=1
+                )
+                with open(out_v, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(verilog)
+                self.nextpnr_logger.info(
+                    f"Renamed module top -> {design_name} in {out_v}"
+                )
+        except Exception as e:
+            self.nextpnr_logger.warning(f"Could not post-rename top module: {e}")
+
+        self.last_error = None
+        self.last_return_code = 0
+        self.nextpnr_logger.info(
+            f"Post-implementation Verilog netlist ready: {out_v}"
+        )
+        return True
