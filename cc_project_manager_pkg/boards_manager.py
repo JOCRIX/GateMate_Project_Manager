@@ -98,6 +98,7 @@ class BoardsManager:
                 'supported_interfaces': ['serial'],
                 'default_interface': 'serial',
                 'programming_modes': ['sram'],
+                'supports_verify': False,
                 'verified': True,
                 'sort_priority': 0,
                 'notes': 'Uses the on-board STM32 FPGA loader over serial. Configure the COM port in FPGA Board Selection.',
@@ -111,6 +112,7 @@ class BoardsManager:
                 'supported_interfaces': ['jtag', 'spi'],
                 'default_interface': 'auto',
                 'programming_modes': ['sram', 'flash'],
+                'supports_verify': True,
                 'verified': True,
                 'notes': 'Default board - well tested and supported'
             },
@@ -123,6 +125,7 @@ class BoardsManager:
                 'supported_interfaces': ['jtag'],
                 'default_interface': 'jtag',
                 'programming_modes': ['sram', 'flash'],
+                'supports_verify': True,
                 'verified': True,
                 'notes': 'Official Cologne Chip evaluation board - JTAG interface'
             },
@@ -135,6 +138,7 @@ class BoardsManager:
                 'supported_interfaces': ['spi'],
                 'default_interface': 'spi',
                 'programming_modes': ['sram', 'flash'],
+                'supports_verify': True,
                 'verified': True,
                 'notes': 'Official Cologne Chip evaluation board - SPI interface'
             },
@@ -147,6 +151,7 @@ class BoardsManager:
                 'supported_interfaces': ['spi'],
                 'default_interface': 'spi',
                 'programming_modes': ['sram', 'flash'],
+                'supports_verify': True,
                 'verified': True,
                 'notes': 'Official Cologne Chip FPGA programmer - SPI interface'
             },
@@ -159,6 +164,7 @@ class BoardsManager:
                 'supported_interfaces': ['jtag'],
                 'default_interface': 'jtag',
                 'programming_modes': ['sram'],
+                'supports_verify': True,
                 'verified': False,
                 'notes': 'Test board to demonstrate dynamic button states - Flash programming not supported'
             }
@@ -201,11 +207,22 @@ class BoardsManager:
                 updated = True
                 self.boards_logger.info(f"Added default board: {board_config['name']}")
             elif board_id == 'zi_0001_0001_logic1':
-                # Add missing bundled Zector board fields without overwriting user settings
+                # Keep Zector capabilities in sync (ZI loader: SRAM only, no verify/flash)
+                existing = current_boards[board_id]
                 for key, value in board_config.items():
-                    if key not in current_boards[board_id]:
-                        current_boards[board_id][key] = value
+                    if key not in existing:
+                        existing[key] = value
                         updated = True
+                for capability_key in ('programming_modes', 'supports_verify', 'programming_tool'):
+                    if existing.get(capability_key) != board_config.get(capability_key):
+                        existing[capability_key] = board_config[capability_key]
+                        updated = True
+            else:
+                # Seed new capability fields without overwriting user-tuned modes
+                existing = current_boards[board_id]
+                if "supports_verify" not in existing:
+                    existing["supports_verify"] = board_config.get("supports_verify", True)
+                    updated = True
         
         if updated:
             self._save_configuration()

@@ -201,6 +201,8 @@ class NextPnRCommands(ToolChainManager):
         self.last_return_code: Optional[int] = None
         self.last_command: Optional[List[str]] = None
         self.last_seed_results: List[Dict[str, Any]] = []
+        # Seed whose implementation was promoted to ``{design}_impl.txt`` / .bit
+        self.last_bitstream_seed: Optional[int] = None
         self.progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
         self._state_lock = threading.Lock()
 
@@ -1155,6 +1157,7 @@ class NextPnRCommands(ToolChainManager):
         self.last_return_code = None
         self.last_command = None
         self.last_seed_results = []
+        self.last_bitstream_seed = None
 
         pnr_settings = self.merge_pnr_settings(settings)
         if pnr_settings.get("device"):
@@ -1417,6 +1420,12 @@ class NextPnRCommands(ToolChainManager):
                     if os.path.normpath(output_file) != os.path.normpath(canonical):
                         shutil.copy2(output_file, canonical)
                         self.nextpnr_logger.info(f"Copied best/canonical impl to {canonical}")
+                    with self._state_lock:
+                        self.last_bitstream_seed = int(seed)
+                    self._emit_live(
+                        f"Bitstream source seed: {seed} "
+                        f"(implementation → {os.path.basename(canonical)})"
+                    )
 
                 with self._state_lock:
                     self.last_error = None
@@ -1763,6 +1772,8 @@ class NextPnRCommands(ToolChainManager):
             )
             return False
 
+        self.last_bitstream_seed = int(best["seed"])
+
         if best.get("report_path") and os.path.exists(best["report_path"]):
             try:
                 shutil.copy2(
@@ -1779,6 +1790,10 @@ class NextPnRCommands(ToolChainManager):
             f"(worst_slack={best.get('worst_slack')}, fmax={best.get('fmax')}) ==="
         )
         self._emit_live(f"Canonical implementation: {canonical}")
+        self._emit_live(
+            f"Bitstream will be generated from seed {best['seed']} only "
+            f"({os.path.basename(canonical)} → {design_name}.bit)"
+        )
         self._notify_progress(
             {
                 "event": "multi_seed_done",
@@ -1844,7 +1859,16 @@ class NextPnRCommands(ToolChainManager):
             gmpack_cmd.extend(options)
 
         self.last_command = list(gmpack_cmd)
-        self.nextpnr_logger.info(f"Generating bitstream for {design_name} with gmpack")
+        seed_note = ""
+        if self.last_bitstream_seed is not None:
+            seed_note = f" (from P&R seed {self.last_bitstream_seed})"
+            self._emit_live(
+                f"Packing bitstream from seed {self.last_bitstream_seed}: "
+                f"{os.path.basename(impl_file)} → {os.path.basename(bitstream_file)}"
+            )
+        self.nextpnr_logger.info(
+            f"Generating bitstream for {design_name} with gmpack{seed_note}"
+        )
         self.nextpnr_logger.debug(f"gmpack Command: {' '.join(gmpack_cmd)}")
         self.nextpnr_logger.info(f"Input implementation: {impl_file}")
         self.nextpnr_logger.info(f"Output bitstream: {bitstream_file}")
@@ -1872,6 +1896,11 @@ class NextPnRCommands(ToolChainManager):
                 self.last_return_code = None
                 self.nextpnr_logger.info(f"Successfully generated bitstream for {design_name}")
                 self.nextpnr_logger.info(f"Generated bitstream file: {bitstream_file}")
+                if self.last_bitstream_seed is not None:
+                    self._emit_live(
+                        f"Bitstream ready: {os.path.basename(bitstream_file)} "
+                        f"was packed from seed {self.last_bitstream_seed}"
+                    )
                 return True
 
             self.last_return_code = result.returncode
@@ -1953,15 +1982,104 @@ class NextPnRCommands(ToolChainManager):
         )
         return True
 
+    def get_analysis_artifacts(self, design_name: str) -> Dict[str, Any]:
+        """Locate nextpnr analysis outputs for ``design_name`` after Place & Route.
+
+        Prefers the canonical best-seed copies (``{design}_report.json``, etc.),
+        then falls back to per-seed artifacts and optional SDF / SVG files.
+        """
+        artifacts: Dict[str, Any] = {
+            "report_json": None,
+            "seed_reports": [],
+            "sdf_files": [],
+            "placed_svg": None,
+            "routed_svg": None,
+            "impl_txt": None,
+            "log_file": None,
+        }
+        if not design_name:
+            return artifacts
+
+        impl = os.path.join(self.work_dir, f"{design_name}_impl.txt")
+        if os.path.isfile(impl):
+            artifacts["impl_txt"] = impl
+
+        log_file = os.path.join(self.impl_logs_dir, "nextpnr_commands.log")
+        if os.path.isfile(log_file):
+            artifacts["log_file"] = log_file
+
+        canonical_report = os.path.join(self.timing_dir, f"{design_name}_report.json")
+        if os.path.isfile(canonical_report):
+            artifacts["report_json"] = canonical_report
+
+        seed_reports: List[str] = []
+        placed_candidates: List[str] = []
+        routed_candidates: List[str] = []
+        sdf_files: List[str] = []
+
+        search_dirs = [self.timing_dir, self.work_dir]
+        for directory in search_dirs:
+            if not directory or not os.path.isdir(directory):
+                continue
+            try:
+                for name in os.listdir(directory):
+                    path = os.path.join(directory, name)
+                    if not os.path.isfile(path):
+                        continue
+                    if name.startswith(f"{design_name}_report_seed_") and name.endswith(".json"):
+                        seed_reports.append(path)
+                    elif name.startswith(f"{design_name}_seed_") and name.endswith("_placed.svg"):
+                        placed_candidates.append(path)
+                    elif name.startswith(f"{design_name}_seed_") and name.endswith("_routed.svg"):
+                        routed_candidates.append(path)
+                    elif name.startswith(design_name) and name.endswith(".sdf"):
+                        sdf_files.append(path)
+                    elif name == f"{design_name}_placed.svg":
+                        placed_candidates.append(path)
+                    elif name == f"{design_name}_routed.svg":
+                        routed_candidates.append(path)
+            except OSError:
+                continue
+
+        seed_reports.sort()
+        artifacts["seed_reports"] = seed_reports
+        if not artifacts["report_json"] and seed_reports:
+            # Prefer last seed report if canonical missing (multi-seed without copy)
+            artifacts["report_json"] = seed_reports[-1]
+
+        # Prefer SVG matching last_bitstream_seed when known
+        def _pick_svg(candidates: List[str], kind: str) -> Optional[str]:
+            if not candidates:
+                return None
+            seed = self.last_bitstream_seed
+            if seed is not None:
+                tag = f"{int(seed):03d}"
+                for path in candidates:
+                    if f"_seed_{tag}_{kind}.svg" in os.path.basename(path):
+                        return path
+            return sorted(candidates)[-1]
+
+        artifacts["placed_svg"] = _pick_svg(placed_candidates, "placed")
+        artifacts["routed_svg"] = _pick_svg(routed_candidates, "routed")
+        artifacts["sdf_files"] = sorted(sdf_files)
+        return artifacts
+
     def get_implementation_status(self, design_name: str) -> Dict[str, bool]:
         """Check whether nextpnr / gmpack outputs exist for a design."""
         impl_file = os.path.join(self.work_dir, f"{design_name}_impl.txt")
         bitstream_file = os.path.join(self.bitstream_dir, f"{design_name}.bit")
         placed = os.path.exists(impl_file)
+        artifacts = self.get_analysis_artifacts(design_name)
+        has_report = bool(artifacts.get("report_json"))
+        has_sdf = bool(artifacts.get("sdf_files"))
+        has_svg = bool(artifacts.get("placed_svg") or artifacts.get("routed_svg"))
         return {
             "placed": placed,
             "routed": placed,
             "bitstream_generated": os.path.exists(bitstream_file),
+            "timing_analyzed": has_report or has_sdf,
+            "has_report": has_report,
+            "has_placement_graphics": has_svg,
         }
 
     def get_available_placed_designs(self) -> List[str]:
