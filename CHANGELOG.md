@@ -5,6 +5,16 @@ All notable changes to GateMate Project Manager are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-09-13
+
+### Fixed
+
+- **Auto-Setup no longer writes User-global `QT_PLUGIN_PATH` / GTK vars** — those broke other Qt apps (e.g. reMarkable). Only `YOSYSHQ_ROOT` + User PATH are persisted; suite Qt/GTK env is applied per process when launching tools. Re-running Auto-Setup also removes previously persisted clashy vars.
+
+### Changed
+
+- Version bump to **0.4.3**.
+
 ## [0.4.2] - 2026-08-12
 
 ### Added

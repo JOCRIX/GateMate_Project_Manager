@@ -341,6 +341,7 @@ class AutoSetupToolchainDialog(QDialog):
         vscode_failed = any("VS Code / TerosHDL setup FAILED" in n for n in notes)
         msg = (
             "Toolchain is configured for this machine (User PATH + YOSYSHQ_ROOT).\n"
+            "Qt/GTK suite variables are not set User-global (avoids clashes with other apps).\n"
             "Restart GateMate Project Manager so Check Toolchain sees PATH tools.\n"
             "New projects will pick up these defaults automatically."
         )

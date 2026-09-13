@@ -1,8 +1,9 @@
 """Pinned toolchain auto-download / extract for GateMate Project Manager.
 
 One-time machine setup: downloads fixed versions, extracts them, runs OSS CAD
-``environment.ps1`` side-effects, and persists User environment variables / PATH
-so tools work for all future projects (and external terminals after logon).
+``environment.ps1`` side-effects, and persists ``YOSYSHQ_ROOT`` + User PATH so
+tools are findable for all future projects. Suite Qt/GTK/cert vars are applied
+only when launching tools (not User-global — avoids breaking other Qt apps).
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def _http_get(url: str, timeout: int = 120):
     req = Request(
         url,
         headers={
-            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4.2",
+            "User-Agent": "GateMate-Project-Manager-AutoSetup/0.4.3",
             "Accept": "*/*",
         },
     )
@@ -356,6 +357,58 @@ def set_user_env_var(name: str, value: str) -> None:
     _broadcast_env_change()
 
 
+def delete_user_env_var(name: str) -> bool:
+    """Remove a User environment variable if present. Returns True if deleted."""
+    removed = False
+    if os.name != "nt":
+        if name in os.environ:
+            del os.environ[name]
+            return True
+        return False
+
+    import winreg
+
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Environment",
+            0,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,
+        )
+    except OSError:
+        return False
+    try:
+        try:
+            winreg.DeleteValue(key, name)
+            removed = True
+        except FileNotFoundError:
+            pass
+    finally:
+        winreg.CloseKey(key)
+
+    if name in os.environ:
+        del os.environ[name]
+        removed = True
+    if removed:
+        _broadcast_env_change()
+    return removed
+
+
+# Suite-only vars that must NOT be User-global: they break other Qt/GTK apps
+# (e.g. reMarkable) when QT_PLUGIN_PATH points at oss-cad-suite plugins.
+_OSS_CAD_PROCESS_ONLY_ENV_VARS = (
+    "QT_PLUGIN_PATH",
+    "QT_LOGGING_RULES",
+    "GTK_EXE_PREFIX",
+    "GTK_DATA_PREFIX",
+    "GDK_PIXBUF_MODULEDIR",
+    "GDK_PIXBUF_MODULE_FILE",
+    "PYTHON_EXECUTABLE",
+    "SSL_CERT_FILE",
+    "OPENFPGALOADER_SOJ_DIR",
+)
+
+
 def prepend_user_path(directories: List[str]) -> List[str]:
     """Prepend directories to the User PATH. Returns directories that were newly added."""
     cleaned = []
@@ -441,35 +494,33 @@ def run_oss_cad_environment_ps1(oss_root: str) -> None:
         )
 
 
-def persist_oss_cad_user_environment(oss_root: str) -> None:
-    """Write durable User env vars equivalent to ``environment.ps1`` / ``environment.bat``."""
+def persist_oss_cad_user_environment(oss_root: str) -> List[str]:
+    """Persist only machine-safe User env for OSS CAD Suite.
+
+    Writes ``YOSYSHQ_ROOT`` and prepends suite ``bin`` / ``lib`` to User PATH.
+    Qt / GTK / pixbuf / Python / cert vars from ``environment.ps1`` are applied
+    only when GateMate launches suite tools (see ``ToolChainManager.apply_oss_cad_env``);
+    writing them to the User hive breaks other Qt apps (e.g. reMarkable).
+
+    Also removes those process-only vars if a previous Auto-Setup left them in
+    the User environment. Returns notes about cleanup.
+    """
+    notes: List[str] = []
     root = os.path.abspath(oss_root)
     root_slash = root if root.endswith(("\\", "/")) else root + "\\"
     bin_dir = os.path.join(root, "bin")
     lib_dir = os.path.join(root, "lib")
 
     set_user_env_var("YOSYSHQ_ROOT", root_slash)
-    set_user_env_var("SSL_CERT_FILE", os.path.join(root, "etc", "cacert.pem"))
-    set_user_env_var("PYTHON_EXECUTABLE", os.path.join(root, "lib", "python3.exe"))
-    qt5 = os.path.join(root, "lib", "qt5", "plugins")
-    qt6 = os.path.join(root, "lib", "qt6", "plugins")
-    set_user_env_var("QT_PLUGIN_PATH", qt5 if os.path.isdir(qt5) else qt6)
-    set_user_env_var("QT_LOGGING_RULES", "*=false")
-    set_user_env_var("GTK_EXE_PREFIX", root_slash)
-    set_user_env_var("GTK_DATA_PREFIX", root_slash)
-    set_user_env_var(
-        "GDK_PIXBUF_MODULEDIR",
-        os.path.join(root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders"),
-    )
-    set_user_env_var(
-        "GDK_PIXBUF_MODULE_FILE",
-        os.path.join(root, "lib", "gdk-pixbuf-2.0", "2.10.0", "loaders.cache"),
-    )
-    set_user_env_var(
-        "OPENFPGALOADER_SOJ_DIR",
-        os.path.join(root, "share", "openFPGALoader"),
-    )
     prepend_user_path([bin_dir, lib_dir])
+
+    cleaned = [name for name in _OSS_CAD_PROCESS_ONLY_ENV_VARS if delete_user_env_var(name)]
+    if cleaned:
+        notes.append(
+            "OSS CAD: removed User env vars that clash with other apps: "
+            + ", ".join(cleaned)
+        )
+    return notes
 
 
 def configure_teroshdl_settings(resolved: Dict[str, str]) -> List[str]:
@@ -549,7 +600,7 @@ def configure_teroshdl_settings(resolved: Dict[str, str]) -> List[str]:
 def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[str]:
     """One-time machine configuration after archives are extracted.
 
-    - OSS CAD: run ``environment.ps1``, persist User env + PATH
+    - OSS CAD: run ``environment.ps1``, persist YOSYSHQ_ROOT + User PATH
     - GHDL / GTKWave / openFPGALoader: User PATH entries
     - Save global defaults + TerosHDL ``~/.teroshdl2_config.json``
     - Seed the currently open project when possible
@@ -571,8 +622,11 @@ def finalize_machine_setup(install_root: str, resolved: Dict[str, str]) -> List[
         except Exception as e:
             notes.append(f"OSS CAD: environment.ps1 warning: {e}")
         try:
-            persist_oss_cad_user_environment(oss)
-            notes.append("OSS CAD: persisted YOSYSHQ_ROOT + User PATH (bin/lib)")
+            notes.extend(persist_oss_cad_user_environment(oss))
+            notes.append(
+                "OSS CAD: persisted YOSYSHQ_ROOT + User PATH (bin/lib); "
+                "Qt/GTK suite vars are process-only (not User-global)"
+            )
         except Exception as e:
             notes.append(f"OSS CAD: failed to persist User environment: {e}")
     else:

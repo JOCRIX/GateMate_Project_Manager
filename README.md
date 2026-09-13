@@ -4,7 +4,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 
 **The project is work-in-progress.**
 
-**Current version: 0.4.2**
+**Current version: 0.4.3**
 
 ## Features
 
@@ -44,7 +44,7 @@ A comprehensive FPGA project management tool for GHDL, Yosys, and Place & Route 
 ```
 GateMate_Project_Manager/
 ├── cc_project_manager_pkg/            # Core package modules
-│   ├── __init__.py                    # Package initialization and version (0.4.2)
+│   ├── __init__.py                    # Package initialization and version (0.4.3)
 │   ├── __main__.py                    # Main entry point
 │   ├── gui.py                         # PyQt5 GUI interface
 │   ├── cli.py                         # Interactive CLI interface
@@ -97,7 +97,7 @@ GateMate_Project_Manager/
    This creates global commands (see Usage section below).
 
 4. **Install the FPGA toolchain (OSS CAD Suite recommended):**
-   - Prefer **Configuration → Auto-Setup Toolchain** for a one-time machine install of pinned OSS CAD Suite + standalone GHDL (sets User PATH / `YOSYSHQ_ROOT`; GTKWave, openFPGALoader, and Icarus `iverilog`/`vvp` come from the suite)
+   - Prefer **Configuration → Auto-Setup Toolchain** for a one-time machine install of pinned OSS CAD Suite + standalone GHDL (sets User PATH / `YOSYSHQ_ROOT` only — not global `QT_PLUGIN_PATH`; GTKWave, openFPGALoader, and Icarus `iverilog`/`vvp` come from the suite)
    - Or install manually: [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) (`yosys`, `nextpnr-himbaechel`, `gmpack`, GTKWave, Icarus) plus standalone GHDL
    - Configure or verify tool paths under **Configuration** if needed
 
@@ -163,7 +163,7 @@ The GUI is organized into tabs for different operations:
 #### **Configuration Tab**
 - **Check Toolchain** - Verify tool availability and show versions
 - **Edit Toolchain Paths** - Configure tool locations (GHDL, Yosys, nextpnr, gmpack, iverilog, vvp, …)
-- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects (GTKWave + openFPGALoader + Icarus come from OSS CAD Suite)
+- **Auto-Setup Toolchain** - One-time machine setup: download pinned OSS CAD Suite / GHDL, run `environment.ps1`, persist User PATH / `YOSYSHQ_ROOT` for all future projects (suite Qt/GTK env is process-only; GTKWave + openFPGALoader + Icarus come from OSS CAD Suite)
 - **Project Settings** - Modify project-specific settings
 
 #### **Output Window**
@@ -238,4 +238,4 @@ JOCRIX
 
 ## Version
 
-0.4.2
+0.4.3
